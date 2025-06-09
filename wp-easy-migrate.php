@@ -119,6 +119,7 @@ class WPEasyMigrate
         add_action('wp_ajax_wp_easy_migrate_export', [$this, 'handle_export_ajax']);
         add_action('wp_ajax_wp_easy_migrate_import', [$this, 'handle_import_ajax']);
         add_action('wp_ajax_wp_easy_migrate_get_logs', [$this, 'handle_get_logs_ajax']);
+        add_action('wp_ajax_wp_easy_migrate_clear_logs', [$this, 'handle_clear_logs_ajax']);
         add_action('wp_ajax_wpem_export_step', [$this, 'handle_export_step_ajax']);
     }
 
@@ -373,6 +374,19 @@ class WPEasyMigrate
 
         $logs = $this->logger->get_recent_logs(50);
         wp_send_json_success(['logs' => $logs]);
+    }
+
+    /**
+     * Handle clear logs AJAX request
+     */
+    public function handle_clear_logs_ajax()
+    {
+        check_ajax_referer('wp_easy_migrate_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'wp-easy-migrate'));
+        }
+        $this->logger->clear_logs();
+        wp_send_json_success(['message' => __('Logs cleared successfully.', 'wp-easy-migrate')]);
     }
 
     /**

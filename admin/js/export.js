@@ -222,13 +222,21 @@
             const stepMessage = this.getStepMessage(step);
             let statusText = `${stepMessage} (${progress}%)`;
             
-            // Add file archiving specific information
-            if (step === 'archive_files' && status.file_archiving) {
-                const fileInfo = status.file_archiving;
-                statusText = `${stepMessage} (${fileInfo.current_index}/${fileInfo.total_files} files, ${progress}%)`;
+            // Add step-specific information
+            if (step === 'export_database' && status.database_export) {
+                const dbInfo = status.database_export;
+                statusText = `${stepMessage} (${dbInfo.current_table || 'Initializing'}, ${progress}%)`;
                 
-                // Update additional progress information
-                this.updateFileArchivingProgress(fileInfo);
+                // Update database progress information
+                this.updateDatabaseProgress(dbInfo);
+            } else if (step === 'archive_files' && status.file_archiving) {
+                const fileInfo = status.file_archiving;
+                const batchInfo = status.batch_processing;
+                const filesPerStep = batchInfo ? batchInfo.files_per_step : 10;
+                statusText = `${stepMessage} (${fileInfo.current_index}/${fileInfo.total_files} files, ${filesPerStep} per batch, ${progress}%)`;
+                
+                // Update file archiving progress information
+                this.updateFileArchivingProgress(fileInfo, batchInfo);
             }
             
             this.$status.text(statusText);
@@ -241,11 +249,44 @@
         }
         
         /**
+         * Update database export progress
+         * 
+         * @param {Object} dbInfo Database export information
+         */
+        updateDatabaseProgress(dbInfo) {
+            // Update or create database progress elements
+            if (!this.$dbProgress) {
+                this.$dbProgress = $('<div class="wp-easy-migrate-db-progress"></div>');
+                this.$progress.append(this.$dbProgress);
+            }
+            
+            let progressHtml = '';
+            
+            // Current table being processed
+            if (dbInfo.current_table) {
+                progressHtml += `<div class="current-table">Exporting table: ${dbInfo.current_table}</div>`;
+            }
+            
+            // Table progress
+            if (dbInfo.total_tables > 0) {
+                progressHtml += `<div class="table-progress">Table ${dbInfo.current_table_index + 1} of ${dbInfo.total_tables}</div>`;
+            }
+            
+            // Row offset if available
+            if (dbInfo.table_offset > 0) {
+                progressHtml += `<div class="row-progress">Rows processed: ${dbInfo.table_offset.toLocaleString()}</div>`;
+            }
+            
+            this.$dbProgress.html(progressHtml);
+        }
+        
+        /**
          * Update file archiving specific progress
          * 
          * @param {Object} fileInfo File archiving information
+         * @param {Object} batchInfo Batch processing information
          */
-        updateFileArchivingProgress(fileInfo) {
+        updateFileArchivingProgress(fileInfo, batchInfo) {
             // Update or create additional progress elements
             if (!this.$fileProgress) {
                 this.$fileProgress = $('<div class="wp-easy-migrate-file-progress"></div>');
@@ -254,9 +295,14 @@
             
             let progressHtml = '';
             
+            // Batch processing info
+            if (batchInfo && batchInfo.files_per_step) {
+                progressHtml += `<div class="batch-info">Processing ${batchInfo.files_per_step} files per batch</div>`;
+            }
+            
             // Current file being processed
             if (fileInfo.current_file) {
-                progressHtml += `<div class="current-file">Processing: ${fileInfo.current_file}</div>`;
+                progressHtml += `<div class="current-file">Last processed: ${fileInfo.current_file}</div>`;
             }
             
             // Estimated size remaining

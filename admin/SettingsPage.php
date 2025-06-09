@@ -202,8 +202,30 @@ class SettingsPage {
         }
         
         .wp-easy-migrate-file-progress .size-progress,
-        .wp-easy-migrate-file-progress .time-remaining {
+        .wp-easy-migrate-file-progress .time-remaining,
+        .wp-easy-migrate-file-progress .batch-info {
             margin-bottom: 3px;
+        }
+        
+        .wp-easy-migrate-db-progress {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .wp-easy-migrate-db-progress .current-table {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .wp-easy-migrate-db-progress .table-progress,
+        .wp-easy-migrate-db-progress .row-progress {
+            margin-bottom: 3px;
+        }
+        
+        .batch-info {
+            color: #0073aa;
+            font-weight: bold;
         }
         </style>
         <?php
@@ -270,6 +292,19 @@ class SettingsPage {
                                 <option value="1000">1 GB</option>
                             </select>
                             <p class="description"><?php _e('Split large archives into smaller parts for easier handling.', 'wp-easy-migrate'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php _e('Files Per Batch', 'wp-easy-migrate'); ?></th>
+                        <td>
+                            <select name="files_per_step">
+                                <option value="5">5 files</option>
+                                <option value="10" selected>10 files</option>
+                                <option value="20">20 files</option>
+                                <option value="50">50 files</option>
+                                <option value="100">100 files</option>
+                            </select>
+                            <p class="description"><?php _e('Number of files to process in each batch. Lower values are safer for slow servers.', 'wp-easy-migrate'); ?></p>
                         </td>
                     </tr>
                 </table>

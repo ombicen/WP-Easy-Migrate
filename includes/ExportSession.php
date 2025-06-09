@@ -105,7 +105,17 @@ class ExportSession {
             'start_time' => null,
             'last_runtime' => [],
             'estimated_size_remaining' => 0,
-            'estimated_time_remaining' => 0
+            'estimated_time_remaining' => 0,
+            // Database export tracking
+            'db_tables' => [],
+            'current_table' => null,
+            'table_offset' => 0,
+            'db_export_path' => null,
+            'db_total_tables' => 0,
+            'db_current_table_index' => 0,
+            // Batch processing settings
+            'files_per_step' => 10,
+            'db_rows_per_step' => 1000
         ];
     }
     
@@ -552,6 +562,218 @@ class ExportSession {
             'estimated_size_remaining' => $this->get_estimated_size_remaining(),
             'estimated_time_remaining' => $this->get_file_archiving_time_remaining(),
             'current_file' => $this->get_current_file() ? basename($this->get_current_file()) : null
+        ];
+        
+        return $status;
+    }
+    
+    // Database export methods
+    
+    /**
+     * Initialize database export
+     * 
+     * @param array $tables Array of table names
+     */
+    public function init_database_export(array $tables): void {
+        $this->data['db_tables'] = $tables;
+        $this->data['db_total_tables'] = count($tables);
+        $this->data['db_current_table_index'] = 0;
+        $this->data['current_table'] = $tables[0] ?? null;
+        $this->data['table_offset'] = 0;
+        $this->data['db_export_path'] = $this->get_export_dir() . 'database.sql';
+        $this->save();
+    }
+    
+    /**
+     * Get database tables
+     * 
+     * @return array Database tables
+     */
+    public function get_db_tables(): array {
+        return $this->data['db_tables'] ?? [];
+    }
+    
+    /**
+     * Get current table being exported
+     * 
+     * @return string|null Current table name
+     */
+    public function get_current_table(): ?string {
+        return $this->data['current_table'] ?? null;
+    }
+    
+    /**
+     * Get current table offset
+     * 
+     * @return int Current offset
+     */
+    public function get_table_offset(): int {
+        return $this->data['table_offset'] ?? 0;
+    }
+    
+    /**
+     * Get database export path
+     * 
+     * @return string|null Database export path
+     */
+    public function get_db_export_path(): ?string {
+        return $this->data['db_export_path'] ?? null;
+    }
+    
+    /**
+     * Get database rows per step
+     * 
+     * @return int Rows per step
+     */
+    public function get_db_rows_per_step(): int {
+        return $this->data['db_rows_per_step'] ?? 1000;
+    }
+    
+    /**
+     * Move to next table
+     */
+    public function next_table(): void {
+        $this->data['db_current_table_index']++;
+        $this->data['table_offset'] = 0;
+        
+        if ($this->data['db_current_table_index'] < count($this->data['db_tables'])) {
+            $this->data['current_table'] = $this->data['db_tables'][$this->data['db_current_table_index']];
+        } else {
+            $this->data['current_table'] = null;
+        }
+        
+        $this->save();
+    }
+    
+    /**
+     * Update table offset
+     * 
+     * @param int $offset New offset
+     */
+    public function update_table_offset(int $offset): void {
+        $this->data['table_offset'] = $offset;
+        $this->save();
+    }
+    
+    /**
+     * Check if database export is complete
+     * 
+     * @return bool True if complete
+     */
+    public function is_database_export_complete(): bool {
+        return $this->data['current_table'] === null;
+    }
+    
+    /**
+     * Get database export progress
+     * 
+     * @return int Progress percentage (0-100)
+     */
+    public function get_database_export_progress(): int {
+        if ($this->data['db_total_tables'] === 0) {
+            return 100;
+        }
+        
+        return round(($this->data['db_current_table_index'] / $this->data['db_total_tables']) * 100);
+    }
+    
+    // Batch processing methods
+    
+    /**
+     * Get files per step
+     * 
+     * @return int Files per step
+     */
+    public function get_files_per_step(): int {
+        return $this->data['files_per_step'] ?? 10;
+    }
+    
+    /**
+     * Set files per step
+     * 
+     * @param int $count Files per step
+     */
+    public function set_files_per_step(int $count): void {
+        $this->data['files_per_step'] = max(1, $count);
+        $this->save();
+    }
+    
+    /**
+     * Increment current index by batch size and update progress
+     * 
+     * @param int $batch_size Number of files processed
+     * @param float $runtime Runtime for this batch in seconds
+     */
+    public function increment_index_batch(int $batch_size, float $runtime): void {
+        $this->data['current_index'] += $batch_size;
+        
+        // Track runtime for estimation
+        $this->data['last_runtime'][] = $runtime;
+        
+        // Keep only last 10 runtimes for averaging
+        if (count($this->data['last_runtime']) > 10) {
+            $this->data['last_runtime'] = array_slice($this->data['last_runtime'], -10);
+        }
+        
+        // Update progress
+        if ($this->data['total_files'] > 0) {
+            $this->data['progress'] = round(($this->data['current_index'] / $this->data['total_files']) * 100);
+        }
+        
+        // Update estimated size remaining
+        $this->update_estimated_size_remaining();
+        
+        // Update estimated time remaining
+        $this->update_estimated_time_remaining();
+        
+        $this->save();
+    }
+    
+    /**
+     * Get current batch of files
+     * 
+     * @return array Array of file paths for current batch
+     */
+    public function get_current_batch(): array {
+        $start_index = $this->data['current_index'];
+        $batch_size = $this->data['files_per_step'];
+        
+        return array_slice($this->data['file_list'], $start_index, $batch_size);
+    }
+    
+    /**
+     * Get current batch of file sizes
+     * 
+     * @return array Array of file sizes for current batch
+     */
+    public function get_current_batch_sizes(): array {
+        $start_index = $this->data['current_index'];
+        $batch_size = $this->data['files_per_step'];
+        
+        return array_slice($this->data['file_sizes'], $start_index, $batch_size);
+    }
+    
+    /**
+     * Get enhanced status with database and batch info
+     * 
+     * @return array Enhanced session status
+     */
+    public function get_enhanced_status_with_db(): array {
+        $status = $this->get_enhanced_status();
+        
+        // Add database export specific data
+        $status['database_export'] = [
+            'total_tables' => $this->data['db_total_tables'] ?? 0,
+            'current_table_index' => $this->data['db_current_table_index'] ?? 0,
+            'current_table' => $this->data['current_table'] ?? null,
+            'table_offset' => $this->data['table_offset'] ?? 0,
+            'progress' => $this->get_database_export_progress()
+        ];
+        
+        // Add batch processing info
+        $status['batch_processing'] = [
+            'files_per_step' => $this->data['files_per_step'] ?? 10,
+            'db_rows_per_step' => $this->data['db_rows_per_step'] ?? 1000
         ];
         
         return $status;

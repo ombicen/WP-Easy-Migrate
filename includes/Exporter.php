@@ -672,4 +672,208 @@ class Exporter {
         // Fallback to filename
         return basename($file_path);
     }
+    
+    /**
+     * Export database chunk (table-by-table or by row limit)
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function export_database_chunk(ExportSession $session): array {
+        global $wpdb;
+        
+        $start_time = microtime(true);
+        
+        // Initialize database export if not started
+        if (!$session->get_current_table()) {
+            $tables = $wpdb->get_results("SHOW TABLES", ARRAY_N);
+            $table_names = array_column($tables, 0);
+            $session->init_database_export($table_names);
+            
+            // Write SQL header
+            $db_path = $session->get_db_export_path();
+            $sql_header = "-- WordPress Database Export\n";
+            $sql_header .= "-- Generated on: " . current_time('mysql') . "\n";
+            $sql_header .= "-- WordPress Version: " . get_bloginfo('version') . "\n\n";
+            $sql_header .= "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n";
+            $sql_header .= "SET time_zone = \"+00:00\";\n\n";
+            
+            file_put_contents($db_path, $sql_header);
+        }
+        
+        $current_table = $session->get_current_table();
+        if (!$current_table) {
+            return [
+                'success' => true,
+                'step' => 'export_database',
+                'progress' => 100,
+                'complete' => true,
+                'message' => 'Database export completed'
+            ];
+        }
+        
+        $table_offset = $session->get_table_offset();
+        $rows_per_step = $session->get_db_rows_per_step();
+        $db_path = $session->get_db_export_path();
+        
+        $sql_content = '';
+        
+        // Export table structure on first chunk
+        if ($table_offset === 0) {
+            $create_table = $wpdb->get_row("SHOW CREATE TABLE `{$current_table}`", ARRAY_N);
+            $sql_content .= "\n-- Table structure for table `{$current_table}`\n";
+            $sql_content .= "DROP TABLE IF EXISTS `{$current_table}`;\n";
+            $sql_content .= $create_table[1] . ";\n\n";
+            $sql_content .= "-- Dumping data for table `{$current_table}`\n";
+        }
+        
+        // Get table data in chunks
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM `{$current_table}` LIMIT %d OFFSET %d",
+                $rows_per_step,
+                $table_offset
+            ),
+            ARRAY_A
+        );
+        
+        $rows_processed = count($rows);
+        
+        if ($rows_processed > 0) {
+            foreach ($rows as $row) {
+                $values = [];
+                foreach ($row as $value) {
+                    if (is_null($value)) {
+                        $values[] = 'NULL';
+                    } else {
+                        $values[] = "'" . $wpdb->_real_escape($value) . "'";
+                    }
+                }
+                $sql_content .= "INSERT INTO `{$current_table}` VALUES (" . implode(', ', $values) . ");\n";
+            }
+        }
+        
+        // Append to database file
+        if (!empty($sql_content)) {
+            file_put_contents($db_path, $sql_content, FILE_APPEND | LOCK_EX);
+        }
+        
+        // Update progress
+        if ($rows_processed < $rows_per_step) {
+            // Table complete, move to next
+            $sql_content = "\n";
+            file_put_contents($db_path, $sql_content, FILE_APPEND | LOCK_EX);
+            $session->next_table();
+            $message = "Completed table: {$current_table}";
+        } else {
+            // More rows in this table
+            $session->update_table_offset($table_offset + $rows_per_step);
+            $message = "Exported {$rows_processed} rows from {$current_table}";
+        }
+        
+        $runtime = microtime(true) - $start_time;
+        $progress = $session->get_database_export_progress();
+        $complete = $session->is_database_export_complete();
+        
+        return [
+            'success' => true,
+            'step' => 'export_database',
+            'progress' => $progress,
+            'complete' => $complete,
+            'message' => $message,
+            'current_table' => $session->get_current_table(),
+            'table_progress' => $progress
+        ];
+    }
+    
+    /**
+     * Archive next batch of files
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function archive_next_batch(ExportSession $session): array {
+        $start_time = microtime(true);
+        
+        // Get current batch of files
+        $current_batch = $session->get_current_batch();
+        if (empty($current_batch)) {
+            return [
+                'success' => true,
+                'step' => 'archive_files',
+                'progress' => 100,
+                'complete' => true,
+                'message' => 'File archiving completed'
+            ];
+        }
+        
+        // Get archive path
+        $archive_path = $session->get_archive_path();
+        if (!$archive_path) {
+            throw new Exception('Archive path not set');
+        }
+        
+        // Open archive
+        $zip = new \ZipArchive();
+        $result = $zip->open($archive_path, \ZipArchive::CREATE);
+        
+        if ($result !== TRUE) {
+            throw new Exception("Cannot open archive: {$archive_path} (Error: {$result})");
+        }
+        
+        $files_added = 0;
+        $files_skipped = 0;
+        
+        // Add files to archive
+        foreach ($current_batch as $file_path) {
+            if (!file_exists($file_path)) {
+                $files_skipped++;
+                continue;
+            }
+            
+            // Determine relative path for archive
+            $relative_path = self::get_relative_archive_path($file_path, $session->get_options());
+            
+            // Add file to archive
+            if ($zip->addFile($file_path, $relative_path)) {
+                $files_added++;
+            } else {
+                $files_skipped++;
+            }
+        }
+        
+        $zip->close();
+        
+        // Calculate runtime
+        $runtime = microtime(true) - $start_time;
+        
+        // Update session
+        $batch_size = count($current_batch);
+        $session->increment_index_batch($batch_size, $runtime);
+        
+        // Check if archiving is complete
+        $complete = $session->is_archiving_complete();
+        
+        $message = "Added {$files_added} files to archive";
+        if ($files_skipped > 0) {
+            $message .= " (skipped {$files_skipped})";
+        }
+        
+        return [
+            'success' => true,
+            'step' => 'archive_files',
+            'progress' => $session->get_progress(),
+            'complete' => $complete,
+            'estimated_size' => $session->get_estimated_size_remaining(),
+            'estimated_time' => $session->get_file_archiving_time_remaining(),
+            'total_files' => $session->get_total_files(),
+            'current_index' => $session->get_current_index(),
+            'files_added' => $files_added,
+            'files_skipped' => $files_skipped,
+            'batch_size' => $batch_size,
+            'message' => $message
+        ];
+    }
 }

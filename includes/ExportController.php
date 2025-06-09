@@ -120,18 +120,28 @@ class ExportController {
                 break;
                 
             case 'export_database':
-                $this->export_database($session);
+                // Handle database export in chunks
+                if (!$session->is_database_export_complete()) {
+                    $result = Exporter::export_database_chunk($session);
+                    
+                    // Return immediately for database export step without moving to next step
+                    wp_send_json_success([
+                        'message' => $result['message'],
+                        'status' => $session->get_enhanced_status_with_db()
+                    ]);
+                    return;
+                }
                 break;
                 
             case 'archive_files':
-                // Handle file-by-file archiving
+                // Handle batch file archiving
                 if (!$session->is_archiving_complete()) {
-                    $result = Exporter::archive_next_file($session);
+                    $result = Exporter::archive_next_batch($session);
                     
                     // Return immediately for file archiving step without moving to next step
                     wp_send_json_success([
                         'message' => $result['message'],
-                        'status' => $session->get_enhanced_status()
+                        'status' => $session->get_enhanced_status_with_db()
                     ]);
                     return;
                 }
@@ -153,8 +163,8 @@ class ExportController {
                 throw new Exception("Unknown export step: {$step}");
         }
         
-        // Move to next step (except for archive_files which handles its own progression)
-        if ($step !== 'archive_files') {
+        // Move to next step (except for export_database and archive_files which handle their own progression)
+        if (!in_array($step, ['export_database', 'archive_files'])) {
             $session->next_step();
         }
     }
@@ -192,88 +202,15 @@ class ExportController {
         $scan_result = $this->exporter->scan_files($options);
         $session->set_file_list($scan_result['files'], $scan_result['sizes']);
         
+        // Set files per step from options
+        if (isset($options['files_per_step'])) {
+            $session->set_files_per_step($options['files_per_step']);
+        }
+        
         $this->logger->log("File scan completed: " . count($scan_result['files']) . " files, " . size_format(array_sum($scan_result['sizes'])), 'info');
     }
     
-    /**
-     * Export database
-     * 
-     * @param ExportSession $session Export session
-     * @throws Exception
-     */
-    private function export_database(ExportSession $session): void {
-        $options = $session->get_options();
         
-        if (!$options['include_database']) {
-            $this->logger->log('Database export skipped', 'info');
-            return;
-        }
-        
-        global $wpdb;
-        $export_dir = $session->get_export_dir();
-        $db_file = $export_dir . 'database.sql';
-        
-        // Get all tables
-        $tables = $wpdb->get_results("SHOW TABLES", ARRAY_N);
-        
-        $sql_content = "-- WordPress Database Export\n";
-        $sql_content .= "-- Generated on: " . current_time('mysql') . "\n";
-        $sql_content .= "-- WordPress Version: " . get_bloginfo('version') . "\n\n";
-        $sql_content .= "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n";
-        $sql_content .= "SET time_zone = \"+00:00\";\n\n";
-        
-        foreach ($tables as $table) {
-            $table_name = $table[0];
-            
-            // Get table structure
-            $create_table = $wpdb->get_row("SHOW CREATE TABLE `{$table_name}`", ARRAY_N);
-            $sql_content .= "\n-- Table structure for table `{$table_name}`\n";
-            $sql_content .= "DROP TABLE IF EXISTS `{$table_name}`;\n";
-            $sql_content .= $create_table[1] . ";\n\n";
-            
-            // Get table data in chunks to avoid memory issues
-            $offset = 0;
-            $chunk_size = 1000;
-            
-            do {
-                $rows = $wpdb->get_results(
-                    $wpdb->prepare("SELECT * FROM `{$table_name}` LIMIT %d OFFSET %d", $chunk_size, $offset),
-                    ARRAY_A
-                );
-                
-                if (!empty($rows)) {
-                    if ($offset === 0) {
-                        $sql_content .= "-- Dumping data for table `{$table_name}`\n";
-                    }
-                    
-                    foreach ($rows as $row) {
-                        $values = [];
-                        foreach ($row as $value) {
-                            if (is_null($value)) {
-                                $values[] = 'NULL';
-                            } else {
-                                $values[] = "'" . $wpdb->_real_escape($value) . "'";
-                            }
-                        }
-                        $sql_content .= "INSERT INTO `{$table_name}` VALUES (" . implode(', ', $values) . ");\n";
-                    }
-                }
-                
-                $offset += $chunk_size;
-            } while (count($rows) === $chunk_size);
-            
-            if ($offset > 0) {
-                $sql_content .= "\n";
-            }
-        }
-        
-        if (file_put_contents($db_file, $sql_content) === false) {
-            throw new Exception('Failed to write database dump');
-        }
-        
-        $this->logger->log("Database exported: {$db_file}", 'info');
-    }
-    
         
     /**
      * Create manifest file
@@ -391,6 +328,7 @@ class ExportController {
             'include_themes' => isset($post_data['include_themes']) ? (bool) $post_data['include_themes'] : true,
             'include_database' => isset($post_data['include_database']) ? (bool) $post_data['include_database'] : true,
             'split_size' => isset($post_data['split_size']) ? (int) $post_data['split_size'] : 100,
+            'files_per_step' => isset($post_data['files_per_step']) ? (int) $post_data['files_per_step'] : 10,
             'exclude_patterns' => [
                 '*.log',
                 '*/cache/*',

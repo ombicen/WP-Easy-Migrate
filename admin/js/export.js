@@ -218,7 +218,128 @@
         }:</strong> ${fileName}`;
       }
 
+      // Add download buttons
+      successMessage += this.createDownloadButtons(status);
+
       this.updateUI("success", successMessage);
+    }
+
+    /**
+     * Create download buttons for completed export
+     *
+     * @param {Object} status Export status
+     * @returns {string} HTML for download buttons
+     */
+    createDownloadButtons(status) {
+      let downloadHtml =
+        '<div style="margin-top: 15px; padding: 15px; background: #f0f8ff; border: 1px solid #0073aa; border-radius: 4px;">';
+      downloadHtml +=
+        '<h4 style="margin: 0 0 10px 0; color: #0073aa;">📥 Download Your Export</h4>';
+
+      if (status.archive_parts && status.archive_parts.length > 1) {
+        // Split archive - multiple parts
+        downloadHtml +=
+          "<p>Your export has been split into " +
+          status.archive_parts.length +
+          " parts:</p>";
+        status.archive_parts.forEach((part, index) => {
+          const partFileName = part.split("/").pop();
+          downloadHtml += `<div style="margin: 5px 0;">
+            <button class="button button-primary download-part" data-file="${partFileName}" style="margin-right: 10px;">
+              📁 Download Part ${index + 1}
+            </button>
+            <span style="font-size: 12px; color: #666;">${partFileName}</span>
+          </div>`;
+        });
+
+        downloadHtml +=
+          '<button class="button button-secondary download-all-parts" style="margin-top: 10px;">📦 Download All Parts</button>';
+        downloadHtml +=
+          '<p style="margin-top: 10px; font-size: 12px; color: #666;">⚠️ <strong>Important:</strong> You need ALL parts to restore your site. Download all parts and keep them together.</p>';
+      } else {
+        // Single archive
+        const fileName = status.archive_path
+          ? status.archive_path.split("/").pop()
+          : "export.zip";
+        downloadHtml += `<button class="button button-primary download-single" data-file="${fileName}" style="margin-right: 10px;">
+          📁 Download Export
+        </button>`;
+        downloadHtml += `<span style="font-size: 12px; color: #666;">${fileName}</span>`;
+      }
+
+      // Add manifest download if available
+      if (status.standalone_manifest_path) {
+        const manifestFileName = status.standalone_manifest_path
+          .split("/")
+          .pop();
+        downloadHtml += `<div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
+          <button class="button download-manifest" data-file="${manifestFileName}" style="margin-right: 10px;">
+            📄 Download Manifest
+          </button>
+          <span style="font-size: 12px; color: #666;">Verification file (recommended for split archives)</span>
+        </div>`;
+      }
+
+      downloadHtml += "</div>";
+
+      // Bind download button events
+      setTimeout(() => {
+        this.bindDownloadEvents();
+      }, 100);
+
+      return downloadHtml;
+    }
+
+    /**
+     * Bind download button events
+     */
+    bindDownloadEvents() {
+      const self = this;
+
+      // Single file download
+      $(".download-single, .download-part, .download-manifest").on(
+        "click",
+        function (e) {
+          e.preventDefault();
+          const fileName = $(this).data("file");
+          self.downloadFile(fileName);
+        }
+      );
+
+      // Download all parts
+      $(".download-all-parts").on("click", function (e) {
+        e.preventDefault();
+        $(".download-part").each(function () {
+          const fileName = $(this).data("file");
+          setTimeout(() => {
+            self.downloadFile(fileName);
+          }, Math.random() * 1000); // Stagger downloads
+        });
+      });
+    }
+
+    /**
+     * Download a specific file
+     *
+     * @param {string} fileName File name to download
+     */
+    downloadFile(fileName) {
+      // Create download link
+      const downloadUrl =
+        wpEasyMigrate.ajaxUrl +
+        "?action=wp_easy_migrate_download&file=" +
+        encodeURIComponent(fileName) +
+        "&nonce=" +
+        wpEasyMigrate.nonce;
+
+      // Create temporary link and click it
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = fileName;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
 
     /**

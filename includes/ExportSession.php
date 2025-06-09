@@ -120,9 +120,10 @@ class ExportSession
             'db_export_path' => null,
             'db_total_tables' => 0,
             'db_current_table_index' => 0,
-            // Batch processing settings
-            'files_per_step' => 10,
-            'db_rows_per_step' => 1000
+            // Batch processing settings - OPTIMIZED DEFAULTS
+            'files_per_step' => 50,
+            'db_rows_per_step' => 5000, // Increased from 1000 to 5000 for better performance
+            'use_optimized_db_export' => true // Enable optimized database export by default
         ];
     }
 
@@ -146,7 +147,9 @@ class ExportSession
             'include_themes' => true,
             'include_database' => true,
             'split_size' => 100,
-            'files_per_step' => 10,
+            'files_per_step' => 50,
+            'db_export_mode' => 'optimized',
+            'db_rows_per_step' => 5000,
             'exclude_patterns' => [
                 '*.log',
                 '*/cache/*',
@@ -159,8 +162,17 @@ class ExportSession
             $this->data['files_per_step'] = max(1, (int) $options['files_per_step']);
         }
 
+        // Set database options
+        if (isset($options['db_rows_per_step'])) {
+            $this->data['db_rows_per_step'] = max(100, min(50000, (int) $options['db_rows_per_step']));
+        }
+
+        if (isset($options['db_export_mode'])) {
+            $this->data['use_optimized_db_export'] = ($options['db_export_mode'] === 'optimized');
+        }
+
         $this->save();
-        $this->logger->log("Export session started: {$export_id} with {$this->data['files_per_step']} files per step", 'info');
+        $this->logger->log("Export session started: {$export_id} with {$this->data['files_per_step']} files per step, {$this->data['db_rows_per_step']} DB rows per step, " . ($this->data['use_optimized_db_export'] ? 'optimized' : 'standard') . " DB mode", 'info');
     }
 
     /**
@@ -368,7 +380,7 @@ class ExportSession
      */
     public function get_status(): array
     {
-        return [
+        $status = [
             'session_id' => $this->data['session_id'],
             'step' => $this->data['current_step'],
             'step_index' => $this->data['step_index'],
@@ -380,6 +392,18 @@ class ExportSession
             'started_at' => $this->data['started_at'],
             'last_updated' => $this->data['last_updated']
         ];
+
+        // Include step data for download functionality
+        if (!empty($this->data['step_data'])) {
+            if (isset($this->data['step_data']['archive_parts'])) {
+                $status['archive_parts'] = $this->data['step_data']['archive_parts'];
+            }
+            if (isset($this->data['step_data']['standalone_manifest_path'])) {
+                $status['standalone_manifest_path'] = $this->data['step_data']['standalone_manifest_path'];
+            }
+        }
+
+        return $status;
     }
 
     /**
@@ -638,20 +662,56 @@ class ExportSession
      */
     public function init_database_export(array $tables): void
     {
+        $this->logger->log("Initializing database export with " . count($tables) . " tables", 'info');
+
         if (empty($tables)) {
             $this->logger->log('No tables to export', 'warning');
             // Set current_table to null to indicate completion
             $this->data['current_table'] = null;
         } else {
             $this->data['current_table'] = $tables[0];
+            $this->logger->log("First table to export: {$tables[0]}", 'info');
         }
 
         $this->data['db_tables'] = $tables;
         $this->data['db_total_tables'] = count($tables);
         $this->data['db_current_table_index'] = 0;
         $this->data['table_offset'] = 0;
-        $this->data['db_export_path'] = $this->get_export_dir() . 'database.sql';
+
+        // Ensure export directory exists before setting database path
+        $export_dir = $this->get_export_dir();
+        $this->logger->log("Export directory: {$export_dir}", 'info');
+
+        if (!$export_dir) {
+            throw new \Exception('Export directory not set in session');
+        }
+
+        if (!is_dir($export_dir)) {
+            $result = wp_mkdir_p($export_dir);
+            if (!$result) {
+                throw new \Exception("Failed to create export directory: {$export_dir}");
+            }
+            $this->logger->log("Created export directory for database: {$export_dir}", 'info');
+        }
+
+        $this->data['db_export_path'] = $export_dir . 'database.sql';
+        $this->logger->log("Database export path set to: {$this->data['db_export_path']}", 'info');
+
+        // Verify the path was set correctly
+        if (!$this->data['db_export_path']) {
+            throw new \Exception('Failed to set database export path');
+        }
+
         $this->save();
+
+        // Verify the path is still set after save
+        $this->load();
+        $saved_path = $this->get_db_export_path();
+        $this->logger->log("Database export path after save/load: {$saved_path}", 'info');
+
+        if (!$saved_path) {
+            throw new \Exception('Database export path was not saved correctly');
+        }
     }
 
     /**
@@ -701,7 +761,39 @@ class ExportSession
      */
     public function get_db_rows_per_step(): int
     {
-        return $this->data['db_rows_per_step'] ?? 1000;
+        return $this->data['db_rows_per_step'] ?? 5000;
+    }
+
+    /**
+     * Set database rows per step
+     * 
+     * @param int $rows Rows per step
+     */
+    public function set_db_rows_per_step(int $rows): void
+    {
+        $this->data['db_rows_per_step'] = max(100, min(50000, $rows));
+        $this->save();
+    }
+
+    /**
+     * Check if optimized database export is enabled
+     * 
+     * @return bool True if optimized export is enabled
+     */
+    public function use_optimized_db_export(): bool
+    {
+        return $this->data['use_optimized_db_export'] ?? true;
+    }
+
+    /**
+     * Set optimized database export setting
+     * 
+     * @param bool $enabled Whether to use optimized export
+     */
+    public function set_optimized_db_export(bool $enabled): void
+    {
+        $this->data['use_optimized_db_export'] = $enabled;
+        $this->save();
     }
 
     /**
@@ -765,7 +857,7 @@ class ExportSession
      */
     public function get_files_per_step(): int
     {
-        return $this->data['files_per_step'] ?? 10;
+        return $this->data['files_per_step'] ?? 50;
     }
 
     /**
@@ -775,7 +867,7 @@ class ExportSession
      */
     public function set_files_per_step(int $count): void
     {
-        $this->data['files_per_step'] = max(1, $count);
+        $this->data['files_per_step'] = max(1, min(200, $count));
         $this->save();
     }
 
@@ -812,16 +904,61 @@ class ExportSession
     }
 
     /**
-     * Get current batch of files
+     * Get current batch of files with adaptive sizing
      * 
      * @return array Array of file paths for current batch
      */
     public function get_current_batch(): array
     {
         $start_index = $this->data['current_index'];
-        $batch_size = $this->data['files_per_step'];
+        $base_batch_size = $this->data['files_per_step'];
 
-        return array_slice($this->data['file_list'], $start_index, $batch_size);
+        // Adaptive batch sizing based on file sizes
+        $adaptive_batch_size = $this->get_adaptive_batch_size($start_index, $base_batch_size);
+
+        return array_slice($this->data['file_list'], $start_index, $adaptive_batch_size);
+    }
+
+    /**
+     * Calculate adaptive batch size based on file sizes to optimize performance
+     * 
+     * @param int $start_index Starting index in file list
+     * @param int $base_batch_size Base batch size
+     * @return int Optimized batch size
+     */
+    private function get_adaptive_batch_size(int $start_index, int $base_batch_size): int
+    {
+        if (empty($this->data['file_sizes'])) {
+            return $base_batch_size;
+        }
+
+        // Look ahead at upcoming files to adjust batch size
+        $max_files_to_check = min($base_batch_size * 2, count($this->data['file_sizes']) - $start_index);
+        $upcoming_sizes = array_slice($this->data['file_sizes'], $start_index, $max_files_to_check);
+
+        if (empty($upcoming_sizes)) {
+            return 1; // Last file
+        }
+
+        $total_upcoming_size = array_sum($upcoming_sizes);
+        $avg_file_size = $total_upcoming_size / count($upcoming_sizes);
+
+        // Adaptive sizing logic:
+        // - For small files (< 100KB avg): Use larger batches (up to 100 files)
+        // - For medium files (100KB - 5MB avg): Use moderate batches (25-75 files)  
+        // - For large files (> 5MB avg): Use smaller batches (10-25 files)
+
+        if ($avg_file_size < 102400) { // < 100KB
+            $adaptive_size = min(100, $base_batch_size * 2);
+        } elseif ($avg_file_size < 5242880) { // < 5MB
+            $adaptive_size = max(25, min(75, $base_batch_size));
+        } else { // >= 5MB
+            $adaptive_size = max(10, min(25, $base_batch_size));
+        }
+
+        // Don't exceed remaining files
+        $remaining_files = count($this->data['file_list']) - $start_index;
+        return min($adaptive_size, $remaining_files);
     }
 
     /**
@@ -857,8 +994,8 @@ class ExportSession
 
         // Add batch processing info
         $status['batch_processing'] = [
-            'files_per_step' => $this->data['files_per_step'] ?? 10,
-            'db_rows_per_step' => $this->data['db_rows_per_step'] ?? 1000
+            'files_per_step' => $this->data['files_per_step'] ?? 50,
+            'db_rows_per_step' => $this->data['db_rows_per_step'] ?? 5000
         ];
 
         return $status;

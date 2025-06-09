@@ -190,11 +190,7 @@ class Exporter
                 foreach ($rows as $row) {
                     $values = [];
                     foreach ($row as $value) {
-                        if (is_null($value)) {
-                            $values[] = 'NULL';
-                        } else {
-                            $values[] = "'" . esc_sql($value) . "'";
-                        }
+                        $values[] = self::safe_sql_escape($value);
                     }
                     $sql_content .= "INSERT INTO `{$table_name}` VALUES (" . implode(', ', $values) . ");\n";
                 }
@@ -699,6 +695,23 @@ class Exporter
      */
     public static function export_database_chunk(ExportSession $session): array
     {
+        // Choose between optimized and original method based on session setting
+        if ($session->use_optimized_db_export()) {
+            return self::export_database_chunk_optimized($session);
+        } else {
+            return self::export_database_chunk_original($session);
+        }
+    }
+
+    /**
+     * Export database chunk (table-by-table or by row limit) - ORIGINAL VERSION
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function export_database_chunk_original(ExportSession $session): array
+    {
         global $wpdb;
 
         $start_time = microtime(true);
@@ -740,7 +753,7 @@ class Exporter
         // Export table structure on first chunk
         if ($table_offset === 0) {
             $escaped_table = '`' . str_replace('`', '``', $current_table) . '`';
-            $create_table = $wpdb->get_row($wpdb->prepare("SHOW CREATE TABLE %s", $current_table), ARRAY_N);
+            $create_table = $wpdb->get_row("SHOW CREATE TABLE {$escaped_table}", ARRAY_N);
             $sql_content .= "\n-- Table structure for table {$escaped_table}\n";
             $sql_content .= "DROP TABLE IF EXISTS {$escaped_table};\n";
             $sql_content .= $create_table[1] . ";\n\n";
@@ -763,11 +776,7 @@ class Exporter
             foreach ($rows as $row) {
                 $values = [];
                 foreach ($row as $value) {
-                    if (is_null($value)) {
-                        $values[] = 'NULL';
-                    } else {
-                        $values[] = "'" . esc_sql($value) . "'";
-                    }
+                    $values[] = self::safe_sql_escape($value);
                 }
                 $sql_content .= "INSERT INTO `{$current_table}` VALUES (" . implode(', ', $values) . ");\n";
             }
@@ -813,7 +822,262 @@ class Exporter
     }
 
     /**
-     * Archive next batch of files
+     * Export database chunk (table-by-table or by row limit) - OPTIMIZED VERSION
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function export_database_chunk_optimized(ExportSession $session): array
+    {
+        global $wpdb;
+
+        $start_time = microtime(true);
+
+        // Initialize database export if not started
+        if (!$session->get_current_table()) {
+            $tables = $wpdb->get_results("SHOW TABLES", ARRAY_N);
+            $table_names = array_column($tables, 0);
+            $session->init_database_export($table_names);
+
+            // Write SQL header with optimizations
+            $db_path = $session->get_db_export_path();
+            $sql_header = "-- WordPress Database Export (OPTIMIZED)\n";
+            $sql_header .= "-- Generated on: " . current_time('mysql') . "\n";
+            $sql_header .= "-- WordPress Version: " . get_bloginfo('version') . "\n\n";
+            $sql_header .= "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n";
+            $sql_header .= "SET time_zone = \"+00:00\";\n";
+            $sql_header .= "SET FOREIGN_KEY_CHECKS = 0;\n";
+            $sql_header .= "SET UNIQUE_CHECKS = 0;\n";
+            $sql_header .= "SET AUTOCOMMIT = 0;\n\n";
+
+            file_put_contents($db_path, $sql_header);
+        }
+
+        $current_table = $session->get_current_table();
+        if (!$current_table) {
+            // Finalize with optimizations cleanup
+            $db_path = $session->get_db_export_path();
+            $sql_footer = "\nSET FOREIGN_KEY_CHECKS = 1;\n";
+            $sql_footer .= "SET UNIQUE_CHECKS = 1;\n";
+            $sql_footer .= "COMMIT;\n";
+            file_put_contents($db_path, $sql_footer, FILE_APPEND | LOCK_EX);
+
+            return [
+                'success' => true,
+                'step' => 'export_database',
+                'progress' => 100,
+                'complete' => true,
+                'message' => 'Database export completed'
+            ];
+        }
+
+        $table_offset = $session->get_table_offset();
+
+        // Dynamic rows per step based on table size and memory
+        $rows_per_step = self::get_optimized_rows_per_step($current_table, $session->get_db_rows_per_step());
+
+        $db_path = $session->get_db_export_path();
+        $sql_content = '';
+
+        // Export table structure on first chunk
+        if ($table_offset === 0) {
+            $escaped_table = '`' . str_replace('`', '``', $current_table) . '`';
+            $create_table = $wpdb->get_row("SHOW CREATE TABLE {$escaped_table}", ARRAY_N);
+            $sql_content .= "\n-- Table structure for table {$escaped_table}\n";
+            $sql_content .= "DROP TABLE IF EXISTS {$escaped_table};\n";
+            $sql_content .= $create_table[1] . ";\n\n";
+            $sql_content .= "-- Dumping data for table {$escaped_table}\n";
+            $sql_content .= "LOCK TABLES {$escaped_table} WRITE;\n";
+        }
+
+        // Get table data in chunks with optimized query
+        $rows = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT * FROM `{$current_table}` LIMIT %d OFFSET %d",
+                $rows_per_step,
+                $table_offset
+            ),
+            ARRAY_A
+        );
+
+        $rows_processed = count($rows);
+
+        if ($rows_processed > 0) {
+            // Generate SQL with validation
+            $insert_sql = self::generate_bulk_insert_sql($current_table, $rows);
+
+            // Validate the generated SQL before adding to content
+            if (!empty($insert_sql)) {
+                // Basic SQL validation - check for obvious syntax issues
+                if (self::validate_sql_syntax($insert_sql)) {
+                    $sql_content .= $insert_sql;
+                } else {
+                    // If bulk SQL fails validation, fall back to individual INSERT statements
+                    $logger = new Logger();
+                    $logger->log("Bulk SQL validation failed for table {$current_table}, using fallback method", 'warning');
+
+                    foreach ($rows as $row) {
+                        $values = [];
+                        foreach ($row as $value) {
+                            $values[] = self::safe_sql_escape($value);
+                        }
+                        $sql_content .= "INSERT INTO `{$current_table}` VALUES (" . implode(', ', $values) . ");\n";
+                    }
+                }
+            }
+        }
+
+        // Check if table is complete
+        $table_complete = $rows_processed < $rows_per_step;
+
+        if ($table_complete) {
+            $sql_content .= "UNLOCK TABLES;\n\n";
+        }
+
+        // Efficient file writing with buffering
+        if (!empty($sql_content)) {
+            $result = file_put_contents($db_path, $sql_content, FILE_APPEND | LOCK_EX);
+            if ($result === false) {
+                throw new \Exception('Failed to write to database export file: ' . $db_path);
+            }
+        }
+
+        // Update progress
+        if ($table_complete) {
+            $session->next_table();
+            $message = "Completed table: {$current_table} ({$rows_processed} rows)";
+        } else {
+            $session->update_table_offset($table_offset + $rows_per_step);
+            $message = "Exported {$rows_processed} rows from {$current_table} (batch)";
+        }
+
+        $runtime = microtime(true) - $start_time;
+        $progress = $session->get_database_export_progress();
+        $complete = $session->is_database_export_complete();
+
+        return [
+            'success' => true,
+            'step' => 'export_database',
+            'progress' => $progress,
+            'complete' => $complete,
+            'message' => $message,
+            'current_table' => $session->get_current_table(),
+            'table_progress' => $progress,
+            'rows_per_step' => $rows_per_step,
+            'runtime' => $runtime
+        ];
+    }
+
+    /**
+     * Calculate optimized rows per step based on table characteristics
+     * 
+     * @param string $table_name Table name
+     * @param int $base_rows_per_step Base rows per step
+     * @return int Optimized rows per step
+     */
+    private static function get_optimized_rows_per_step(string $table_name, int $base_rows_per_step): int
+    {
+        global $wpdb;
+
+        // Get table info to optimize batch size
+        $table_info = $wpdb->get_row($wpdb->prepare(
+            "SELECT table_rows, avg_row_length, data_length 
+             FROM information_schema.tables 
+             WHERE table_schema = %s AND table_name = %s",
+            DB_NAME,
+            $table_name
+        ));
+
+        if (!$table_info) {
+            return $base_rows_per_step;
+        }
+
+        $table_rows = (int) $table_info->table_rows;
+        $avg_row_length = (int) $table_info->avg_row_length;
+        $data_length = (int) $table_info->data_length;
+
+        // Memory-based optimization
+        $memory_limit = wp_convert_hr_to_bytes(ini_get('memory_limit'));
+        $available_memory = $memory_limit * 0.3; // Use 30% of memory limit for DB operations
+
+        // Calculate optimal batch size based on row size and available memory
+        if ($avg_row_length > 0) {
+            $memory_based_rows = min(50000, max(1000, floor($available_memory / ($avg_row_length * 2))));
+        } else {
+            $memory_based_rows = $base_rows_per_step;
+        }
+
+        // Table size-based optimization
+        if ($table_rows < 1000) {
+            // Small tables: process all at once
+            $optimized_rows = min($table_rows, 10000);
+        } elseif ($table_rows < 100000) {
+            // Medium tables: larger batches
+            $optimized_rows = min(10000, $memory_based_rows);
+        } else {
+            // Large tables: balance between speed and memory
+            $optimized_rows = min(5000, $memory_based_rows);
+        }
+
+        // Row size-based optimization
+        if ($avg_row_length > 10000) { // Large rows (>10KB)
+            $optimized_rows = min(1000, $optimized_rows);
+        } elseif ($avg_row_length < 500) { // Small rows (<500B)
+            $optimized_rows = min(20000, $optimized_rows * 2);
+        }
+
+        return max(100, min(50000, $optimized_rows));
+    }
+
+    /**
+     * Generate optimized bulk INSERT SQL statements
+     * 
+     * @param string $table_name Table name
+     * @param array $rows Array of row data
+     * @return string Bulk INSERT SQL
+     */
+    private static function generate_bulk_insert_sql(string $table_name, array $rows): string
+    {
+        if (empty($rows)) {
+            return '';
+        }
+
+        global $wpdb;
+        $escaped_table = '`' . str_replace('`', '``', $table_name) . '`';
+        $sql = '';
+
+        // Process rows in chunks for bulk INSERT statements
+        $chunk_size = min(1000, count($rows)); // Max 1000 rows per INSERT for optimal performance
+        $row_chunks = array_chunk($rows, $chunk_size);
+
+        foreach ($row_chunks as $chunk) {
+            $sql .= "INSERT INTO {$escaped_table} VALUES\n";
+            $value_strings = [];
+
+            foreach ($chunk as $row) {
+                $values = [];
+                foreach ($row as $value) {
+                    $values[] = self::safe_sql_escape($value);
+                }
+
+                // Validate the row has data
+                if (!empty($values)) {
+                    $value_strings[] = '(' . implode(',', $values) . ')';
+                }
+            }
+
+            // Only add INSERT if we have valid data
+            if (!empty($value_strings)) {
+                $sql .= implode(",\n", $value_strings) . ";\n";
+            }
+        }
+
+        return $sql;
+    }
+
+    /**
+     * Archive next batch of files (original implementation)
      * 
      * @param ExportSession $session Export session
      * @return array Response data
@@ -821,12 +1085,26 @@ class Exporter
      */
     public static function archive_next_batch(ExportSession $session): array
     {
+        // Use the optimized version by default
+        return self::archive_next_batch_optimized($session);
+    }
+
+    /**
+     * High-performance batch archiving with streaming and optimizations
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function archive_next_batch_optimized(ExportSession $session): array
+    {
         $start_time = microtime(true);
 
         // Get current batch of files
         $current_batch = $session->get_current_batch();
         $relative_paths = $session->get_relative_paths();
         $current_index = $session->get_current_index();
+
         if (empty($current_batch)) {
             return [
                 'success' => true,
@@ -843,36 +1121,83 @@ class Exporter
             throw new \Exception('Archive path not set');
         }
 
-        // Open archive
-        $zip = new \ZipArchive();
-        $result = $zip->open($archive_path, \ZipArchive::CREATE);
+        // Initialize ZIP with optimized settings
+        static $zip_handle = null;
+        static $last_archive_path = null;
 
-        if ($result !== TRUE) {
-            throw new \Exception("Cannot open archive: {$archive_path} (Error: {$result})");
+        if ($zip_handle === null || $last_archive_path !== $archive_path) {
+            if ($zip_handle !== null) {
+                $zip_handle->close();
+            }
+
+            $zip_handle = new \ZipArchive();
+            $result = $zip_handle->open($archive_path, \ZipArchive::CREATE);
+
+            if ($result !== TRUE) {
+                throw new \Exception("Cannot open archive: {$archive_path} (Error: {$result})");
+            }
+
+            $last_archive_path = $archive_path;
         }
 
         $files_added = 0;
         $files_skipped = 0;
+        $total_size_processed = 0;
+        $small_files_batch = [];
+        $large_files = [];
 
-        // Add files to archive
+        // First pass: categorize files by size for optimized processing
         foreach ($current_batch as $i => $file_path) {
             if (!file_exists($file_path)) {
                 $files_skipped++;
                 continue;
             }
 
-            // Use stored relative path for archive
             $relative_path = $relative_paths[$current_index + $i] ?? basename($file_path);
+            $file_size = filesize($file_path);
+            $total_size_processed += $file_size;
 
-            // Add file to archive
-            if ($zip->addFile($file_path, $relative_path)) {
+            if ($file_size < 512000) { // < 500KB - batch process small files
+                $small_files_batch[] = [
+                    'path' => $file_path,
+                    'relative' => $relative_path,
+                    'size' => $file_size
+                ];
+            } else { // >= 500KB - process large files individually with streaming
+                $large_files[] = [
+                    'path' => $file_path,
+                    'relative' => $relative_path,
+                    'size' => $file_size
+                ];
+            }
+        }
+
+        // Process small files in batch using addFromString for better performance
+        if (!empty($small_files_batch)) {
+            foreach ($small_files_batch as $file_info) {
+                $file_content = file_get_contents($file_info['path']);
+                if ($file_content !== false) {
+                    if ($zip_handle->addFromString($file_info['relative'], $file_content)) {
+                        $files_added++;
+                    } else {
+                        $files_skipped++;
+                    }
+                    // Free memory immediately
+                    unset($file_content);
+                } else {
+                    $files_skipped++;
+                }
+            }
+        }
+
+        // Process large files individually using addFile for streaming
+        foreach ($large_files as $file_info) {
+            if ($zip_handle->addFile($file_info['path'], $file_info['relative'])) {
                 $files_added++;
             } else {
                 $files_skipped++;
             }
         }
-
-        $zip->close();
 
         // Calculate runtime
         $runtime = microtime(true) - $start_time;
@@ -884,10 +1209,24 @@ class Exporter
         // Check if archiving is complete
         $complete = $session->is_archiving_complete();
 
-        $message = "Added {$files_added} files to archive";
+        // Close ZIP handle if archiving is complete
+        if ($complete && $zip_handle !== null) {
+            $zip_handle->close();
+            $zip_handle = null;
+            $last_archive_path = null;
+        }
+
+        $message = "Processed {$files_added} files";
         if ($files_skipped > 0) {
             $message .= " (skipped {$files_skipped})";
         }
+        if (!empty($small_files_batch)) {
+            $message .= " - " . count($small_files_batch) . " small files batched";
+        }
+        if (!empty($large_files)) {
+            $message .= " - " . count($large_files) . " large files streamed";
+        }
+        $message .= " - " . size_format($total_size_processed) . " processed";
 
         return [
             'success' => true,
@@ -901,7 +1240,93 @@ class Exporter
             'files_added' => $files_added,
             'files_skipped' => $files_skipped,
             'batch_size' => $batch_size,
+            'small_files_batched' => count($small_files_batch),
+            'large_files_streamed' => count($large_files),
+            'total_size_processed' => $total_size_processed,
             'message' => $message
         ];
+    }
+
+    /**
+     * Safely escape a value for SQL insertion with robust handling of complex data
+     * 
+     * @param mixed $value Value to escape
+     * @return string Escaped value
+     */
+    private static function safe_sql_escape($value): string
+    {
+        global $wpdb;
+
+        if (is_null($value)) {
+            return 'NULL';
+        }
+
+        // Convert to string
+        $string_value = (string) $value;
+
+        // Try WordPress's robust escaping first
+        if (method_exists($wpdb, '_real_escape')) {
+            $escaped = $wpdb->_real_escape($string_value);
+        } else {
+            // Fallback to mysqli_real_escape_string if available
+            if (function_exists('mysqli_real_escape_string') && isset($wpdb->dbh)) {
+                $escaped = mysqli_real_escape_string($wpdb->dbh, $string_value);
+            } else {
+                // Last resort: use esc_sql with additional cleaning
+                $escaped = esc_sql($string_value);
+            }
+        }
+
+        // Additional safety measures for problematic characters
+        // Handle null bytes and other control characters that might cause issues
+        $escaped = str_replace("\0", "\\0", $escaped);
+        $escaped = str_replace("\r", "\\r", $escaped);
+        $escaped = str_replace("\n", "\\n", $escaped);
+
+        // Handle extremely long data
+        if (strlen($escaped) > 65535) {
+            $escaped = substr($escaped, 0, 65535);
+        }
+
+        return "'" . $escaped . "'";
+    }
+
+    /**
+     * Validate SQL syntax for basic issues
+     * 
+     * @param string $sql SQL to validate
+     * @return bool True if valid, false if invalid
+     */
+    private static function validate_sql_syntax(string $sql): bool
+    {
+        // Basic validation checks
+        if (empty($sql)) {
+            return false;
+        }
+
+        // Check for balanced parentheses in INSERT statements
+        $open_parens = substr_count($sql, '(');
+        $close_parens = substr_count($sql, ')');
+        if ($open_parens !== $close_parens) {
+            return false;
+        }
+
+        // Check for properly terminated statements
+        if (!preg_match('/;\s*$/', trim($sql))) {
+            return false;
+        }
+
+        // Check for INSERT statement format
+        if (!preg_match('/INSERT\s+INTO\s+`[\w]+`\s+VALUES/i', $sql)) {
+            return false;
+        }
+
+        // Check for obviously malformed data (e.g., unterminated quotes)
+        $quote_count = substr_count($sql, "'");
+        if ($quote_count % 2 !== 0) {
+            return false;
+        }
+
+        return true;
     }
 }

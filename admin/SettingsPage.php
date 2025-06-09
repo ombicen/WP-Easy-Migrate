@@ -302,13 +302,46 @@ class SettingsPage
                         <th scope="row"><?php _e('Files Per Batch', 'wp-easy-migrate'); ?></th>
                         <td>
                             <select name="files_per_step">
-                                <option value="5">5 files</option>
-                                <option value="10" selected>10 files</option>
-                                <option value="20">20 files</option>
-                                <option value="50">50 files</option>
-                                <option value="100">100 files</option>
+                                <option value="10">10 files (Slow servers)</option>
+                                <option value="25">25 files (Conservative)</option>
+                                <option value="50" selected>50 files (Recommended)</option>
+                                <option value="75">75 files (Fast servers)</option>
+                                <option value="100">100 files (Maximum)</option>
                             </select>
-                            <p class="description"><?php _e('Number of files to process in each batch. Lower values are safer for slow servers.', 'wp-easy-migrate'); ?></p>
+                            <p class="description">
+                                <?php _e('Base number of files to process in each batch. The system uses adaptive sizing to optimize performance based on file sizes. Choose "50" for best overall performance, or lower values for slower servers.', 'wp-easy-migrate'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php _e('Database Export Mode', 'wp-easy-migrate'); ?></th>
+                        <td>
+                            <label>
+                                <input type="radio" name="db_export_mode" value="optimized" checked>
+                                <?php _e('Optimized (Recommended)', 'wp-easy-migrate'); ?>
+                            </label><br>
+                            <label>
+                                <input type="radio" name="db_export_mode" value="standard">
+                                <?php _e('Standard (Compatible)', 'wp-easy-migrate'); ?>
+                            </label>
+                            <p class="description">
+                                <?php _e('Optimized mode uses larger batches, bulk INSERT statements, and database optimizations for 3-5x faster exports. Standard mode uses smaller batches for maximum compatibility.', 'wp-easy-migrate'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php _e('Database Rows Per Batch', 'wp-easy-migrate'); ?></th>
+                        <td>
+                            <select name="db_rows_per_step">
+                                <option value="1000">1,000 rows (Conservative)</option>
+                                <option value="2500">2,500 rows (Balanced)</option>
+                                <option value="5000" selected>5,000 rows (Recommended)</option>
+                                <option value="10000">10,000 rows (Fast servers)</option>
+                                <option value="25000">25,000 rows (Very fast servers)</option>
+                            </select>
+                            <p class="description">
+                                <?php _e('Number of database rows to process per batch. Higher values speed up export but use more memory. The optimized mode automatically adjusts this based on table characteristics.', 'wp-easy-migrate'); ?>
+                            </p>
                         </td>
                     </tr>
                 </table>
@@ -343,107 +376,44 @@ class SettingsPage
             <h2><?php _e('Import WordPress Site', 'wp-easy-migrate'); ?></h2>
             <p><?php _e('Import a WordPress site from a previously exported archive.', 'wp-easy-migrate'); ?></p>
 
-            <div class="wp-easy-migrate-status warning">
-                <strong><?php _e('Warning:', 'wp-easy-migrate'); ?></strong>
-                <?php _e('Importing will overwrite your current site data. Make sure you have a backup before proceeding.', 'wp-easy-migrate'); ?>
-            </div>
-
             <form id="wp-easy-migrate-import-form" enctype="multipart/form-data">
                 <?php wp_nonce_field('wp_easy_migrate_nonce', 'nonce'); ?>
 
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><?php _e('Import File', 'wp-easy-migrate'); ?></th>
+                        <th scope="row"><?php _e('Archive File', 'wp-easy-migrate'); ?></th>
                         <td>
                             <input type="file" name="import_file" accept=".zip" required>
-                            <p class="description">
-                                <?php _e('Select the exported archive file (.zip) or the first part of a split archive (.part1.zip).', 'wp-easy-migrate'); ?>
-                            </p>
+                            <p class="description"><?php _e('Select the exported archive file (.zip) to import.', 'wp-easy-migrate'); ?></p>
                         </td>
                     </tr>
                 </table>
 
-                <p class="submit">
-                    <button type="submit" class="button button-primary" id="start-import">
-                        <?php _e('Start Import', 'wp-easy-migrate'); ?>
-                    </button>
-                </p>
+                <div class="wp-easy-migrate-import-actions">
+                    <input type="submit" class="button button-primary" value="<?php _e('Start Import', 'wp-easy-migrate'); ?>">
+                </div>
             </form>
 
-            <div id="import-progress" class="wp-easy-migrate-progress">
-                <h3><?php _e('Import Progress', 'wp-easy-migrate'); ?></h3>
-                <div class="wp-easy-migrate-progress-bar">
-                    <div class="wp-easy-migrate-progress-fill"></div>
-                </div>
-                <p id="import-status"><?php _e('Preparing import...', 'wp-easy-migrate'); ?></p>
+            <!-- Import Progress -->
+            <div id="wp-easy-migrate-import-progress" class="wp-easy-migrate-progress" style="display: none; margin-top: 20px;">
+                <!-- Progress content will be inserted here by JavaScript -->
             </div>
 
-            <div id="import-result" class="wp-easy-migrate-status" style="display: none;"></div>
+            <!-- Import Status -->
+            <div id="wp-easy-migrate-import-status" class="notice" style="display: none; margin-top: 20px;">
+                <!-- Status messages will be inserted here by JavaScript -->
+            </div>
+
+            <div class="wp-easy-migrate-import-info">
+                <h3><?php _e('Important Notes', 'wp-easy-migrate'); ?></h3>
+                <ul>
+                    <li><?php _e('The import process will overwrite your current database and files.', 'wp-easy-migrate'); ?></li>
+                    <li><?php _e('A backup of your current database will be created automatically.', 'wp-easy-migrate'); ?></li>
+                    <li><?php _e('Large imports may take several minutes to complete.', 'wp-easy-migrate'); ?></li>
+                    <li><?php _e('Do not close this page or navigate away during the import process.', 'wp-easy-migrate'); ?></li>
+                </ul>
+            </div>
         </div>
-
-        <script>
-            jQuery(document).ready(function($) {
-                $('#wp-easy-migrate-import-form').on('submit', function(e) {
-                    e.preventDefault();
-
-                    var $form = $(this);
-                    var $button = $('#start-import');
-                    var $progress = $('#import-progress');
-                    var $result = $('#import-result');
-
-                    // Check if file is selected
-                    var fileInput = $form.find('input[type="file"]')[0];
-                    if (!fileInput.files.length) {
-                        alert('<?php _e('Please select a file to import.', 'wp-easy-migrate'); ?>');
-                        return;
-                    }
-
-                    // Confirm import
-                    if (!confirm('<?php _e('Are you sure you want to import? This will overwrite your current site data.', 'wp-easy-migrate'); ?>')) {
-                        return;
-                    }
-
-                    // Disable form and show progress
-                    $button.prop('disabled', true).text('<?php _e('Importing...', 'wp-easy-migrate'); ?>');
-                    $progress.show();
-                    $result.hide();
-
-                    // Create FormData for file upload
-                    var formData = new FormData($form[0]);
-                    formData.append('action', 'wp_easy_migrate_import');
-
-                    // Start import
-                    $.ajax({
-                        url: ajaxurl,
-                        type: 'POST',
-                        data: formData,
-                        processData: false,
-                        contentType: false,
-                        success: function(response) {
-                            if (response.success) {
-                                $result.removeClass('error').addClass('success')
-                                    .html('<strong><?php _e('Import completed successfully!', 'wp-easy-migrate'); ?></strong><br>' +
-                                        '<?php _e('Your site has been restored. You may need to refresh the page.', 'wp-easy-migrate'); ?>')
-                                    .show();
-                            } else {
-                                $result.removeClass('success').addClass('error')
-                                    .html('<strong><?php _e('Import failed:', 'wp-easy-migrate'); ?></strong><br>' + response.data.message)
-                                    .show();
-                            }
-                        },
-                        error: function() {
-                            $result.removeClass('success').addClass('error')
-                                .html('<strong><?php _e('Import failed:', 'wp-easy-migrate'); ?></strong><br><?php _e('Network error occurred.', 'wp-easy-migrate'); ?>')
-                                .show();
-                        },
-                        complete: function() {
-                            $button.prop('disabled', false).text('<?php _e('Start Import', 'wp-easy-migrate'); ?>');
-                            $progress.hide();
-                        }
-                    });
-                });
-            });
-        </script>
     <?php
     }
 

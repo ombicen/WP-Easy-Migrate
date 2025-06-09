@@ -121,6 +121,8 @@ class WPEasyMigrate
         add_action('wp_ajax_wp_easy_migrate_get_logs', [$this, 'handle_get_logs_ajax']);
         add_action('wp_ajax_wp_easy_migrate_clear_logs', [$this, 'handle_clear_logs_ajax']);
         add_action('wp_ajax_wpem_export_step', [$this, 'handle_export_step_ajax']);
+        add_action('wp_ajax_wpem_import_step', [$this, 'handle_import_step_ajax']);
+        add_action('wp_ajax_wp_easy_migrate_download', [$this, 'handle_download_ajax']);
     }
 
     /**
@@ -243,6 +245,15 @@ class WPEasyMigrate
             true
         );
 
+        // Enqueue import JavaScript
+        wp_enqueue_script(
+            'wp-easy-migrate-import',
+            WP_EASY_MIGRATE_PLUGIN_URL . 'admin/js/import.js',
+            ['jquery'],
+            WP_EASY_MIGRATE_VERSION,
+            true
+        );
+
         wp_enqueue_style(
             'wp-easy-migrate-admin',
             WP_EASY_MIGRATE_PLUGIN_URL . 'assets/css/admin.css',
@@ -262,6 +273,7 @@ class WPEasyMigrate
                 'exportFailed' => __('Export failed', 'wp-easy-migrate'),
                 'exportCancelled' => __('Export cancelled', 'wp-easy-migrate'),
                 'exportInProgress' => __('Export is in progress. Are you sure you want to leave?', 'wp-easy-migrate'),
+                'importInProgress' => __('Import is in progress. Are you sure you want to leave?', 'wp-easy-migrate'),
                 'file' => __('File', 'wp-easy-migrate'),
                 'processing' => __('Processing...', 'wp-easy-migrate'),
                 'preparingExport' => __('Preparing export...', 'wp-easy-migrate'),
@@ -401,6 +413,121 @@ class WPEasyMigrate
 
         $controller = new \WPEasyMigrate\ExportController();
         $controller->handle_export_step();
+    }
+
+    /**
+     * Handle import step AJAX request
+     */
+    public function handle_import_step_ajax()
+    {
+        // Ensure the ImportController class is loaded
+        if (!class_exists('\WPEasyMigrate\ImportController')) {
+            require_once WP_EASY_MIGRATE_INCLUDES_DIR . 'ImportController.php';
+        }
+
+        $controller = new \WPEasyMigrate\ImportController();
+        $controller->handle_import_step();
+    }
+
+    /**
+     * Handle download AJAX request
+     */
+    public function handle_download_ajax()
+    {
+        // Verify nonce and capabilities
+        if (!wp_verify_nonce($_REQUEST['nonce'], 'wp_easy_migrate_nonce')) {
+            wp_die(__('Security check failed', 'wp-easy-migrate'), '', array('response' => 403));
+        }
+
+        if (!current_user_can('manage_options')) {
+            wp_die(__('Insufficient permissions', 'wp-easy-migrate'), '', array('response' => 403));
+        }
+
+        if (!isset($_GET['file'])) {
+            wp_die(__('No file specified', 'wp-easy-migrate'), '', array('response' => 400));
+        }
+
+        $requested_file = sanitize_file_name($_GET['file']);
+
+        // Define allowed file patterns
+        $allowed_patterns = [
+            '/^wp-export-[a-zA-Z0-9_-]+-manifest\.json$/',  // Manifest files
+            '/^wp-export-[a-zA-Z0-9_-]+\.zip$/',             // Single archive
+            '/^wp-export-[a-zA-Z0-9_-]+\.part\d+\.zip$/'     // Split archive parts
+        ];
+
+        // Check if filename matches allowed patterns
+        $is_allowed = false;
+        foreach ($allowed_patterns as $pattern) {
+            if (preg_match($pattern, $requested_file)) {
+                $is_allowed = true;
+                break;
+            }
+        }
+
+        if (!$is_allowed) {
+            wp_die(__('Invalid file requested', 'wp-easy-migrate'), '', array('response' => 400));
+        }
+
+        $file_path = WP_EASY_MIGRATE_UPLOADS_DIR . 'exports/' . $requested_file;
+
+        // Check if file exists and is readable
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            wp_die(__('File not found or not accessible', 'wp-easy-migrate'), '', array('response' => 404));
+        }
+
+        // Security check: ensure file is within exports directory
+        $real_file_path = realpath($file_path);
+        $exports_dir = realpath(WP_EASY_MIGRATE_UPLOADS_DIR . 'exports/');
+
+        if (!$real_file_path || strpos($real_file_path, $exports_dir) !== 0) {
+            wp_die(__('Access denied', 'wp-easy-migrate'), '', array('response' => 403));
+        }
+
+        $this->logger->log("Download request for file: {$requested_file}", 'info');
+
+        // Set headers for file download
+        $file_size = filesize($real_file_path);
+        $file_extension = pathinfo($requested_file, PATHINFO_EXTENSION);
+
+        if ($file_extension === 'json') {
+            $content_type = 'application/json';
+        } else {
+            $content_type = 'application/zip';
+        }
+
+        // Clear any existing output
+        if (ob_get_level()) {
+            ob_end_clean();
+        }
+
+        // Set download headers
+        header('Content-Type: ' . $content_type);
+        header('Content-Disposition: attachment; filename="' . $requested_file . '"');
+        header('Content-Length: ' . $file_size);
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Expires: 0');
+        header('Pragma: public');
+
+        // Disable WordPress's default headers
+        nocache_headers();
+
+        // Stream the file
+        $handle = fopen($real_file_path, 'rb');
+        if ($handle) {
+            while (!feof($handle)) {
+                echo fread($handle, 8192);
+                if (ob_get_level()) {
+                    ob_flush();
+                }
+                flush();
+            }
+            fclose($handle);
+        } else {
+            wp_die(__('Unable to read file', 'wp-easy-migrate'), '', array('response' => 500));
+        }
+
+        exit;
     }
 }
 

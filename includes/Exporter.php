@@ -1283,10 +1283,7 @@ class Exporter
         $escaped = str_replace("\r", "\\r", $escaped);
         $escaped = str_replace("\n", "\\n", $escaped);
 
-        // Handle extremely long data
-        if (strlen($escaped) > 65535) {
-            $escaped = substr($escaped, 0, 65535);
-        }
+
 
         return "'" . $escaped . "'";
     }

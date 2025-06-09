@@ -54,7 +54,8 @@ class ExportController
 
             // Check if this is a new export request
             if (isset($_POST['start_export']) && $_POST['start_export']) {
-                $options = $this->parse_export_options();
+                $validated_post = $this->validate_post_data($_POST);
+                $options = $this->parse_export_options($validated_post);
                 $session->start($options);
                 $this->logger->log('New export session started', 'info');
             }
@@ -708,7 +709,7 @@ class ExportController
      * 
      * @return array Export options
      */
-    private function parse_export_options(): array
+    private function parse_export_options(array $validated_post): array
     {
         return [
             'include_uploads' => isset($_POST['include_uploads']) ? (bool) $_POST['include_uploads'] : false,
@@ -838,6 +839,32 @@ class ExportController
         }
 
         $zip->close();
+    }
+
+    /**
+     * Validate and sanitize POST data for export options
+     *
+     * @param array $post POST data
+     * @return array Validated and sanitized POST data
+     */
+    private function validate_post_data(array $post): array
+    {
+        // Add validation and sanitization as needed for your fields
+        return [
+            'include_uploads'   => isset($post['include_uploads']) ? (bool) $post['include_uploads'] : false,
+            'include_plugins'   => isset($post['include_plugins']) ? (bool) $post['include_plugins'] : false,
+            'include_themes'    => isset($post['include_themes']) ? (bool) $post['include_themes'] : false,
+            'include_database'  => isset($post['include_database']) ? (bool) $post['include_database'] : false,
+            'split_size'        => isset($post['split_size']) ? (int) $post['split_size'] : 100,
+            'files_per_step'    => isset($post['files_per_step']) ? (int) $post['files_per_step'] : 50,
+            'db_export_mode'    => isset($post['db_export_mode']) ? sanitize_text_field($post['db_export_mode']) : 'optimized',
+            'db_rows_per_step'  => isset($post['db_rows_per_step']) ? (int) $post['db_rows_per_step'] : 5000,
+            'exclude_patterns'  => isset($post['exclude_patterns']) && is_array($post['exclude_patterns']) ? array_map('sanitize_text_field', $post['exclude_patterns']) : [
+                '*.log',
+                '*/cache/*',
+                '*/wp-easy-migrate/*'
+            ]
+        ];
     }
 
     /**

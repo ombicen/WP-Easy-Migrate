@@ -205,7 +205,16 @@ class ImportController
         $extracted_path = $import_dir . 'extracted/';
         wp_mkdir_p($extracted_path);
 
-        if (!$zip->extractTo($extracted_path)) {
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $entryName = $zip->getNameIndex($i);
+            $resolved  = realpath($extracted_path . '/' . $entryName);
+            if ($resolved === false || strpos($resolved, realpath($extracted_path)) !== 0) {
+                $zip->close();
+                throw new \Exception('Unsafe path in archive: ' . $entryName);
+            }
+        }
+
+        if (! $zip->extractTo($extracted_path)) {
             $zip->close();
             throw new \Exception("Failed to extract archive: {$archive_path}");
         }

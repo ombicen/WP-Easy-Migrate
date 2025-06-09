@@ -466,4 +466,210 @@ class Exporter {
         
         rmdir($dir);
     }
+    
+    /**
+     * Scan files for archiving
+     * 
+     * @param array $options Export options
+     * @return array Array with 'files' and 'sizes' keys
+     */
+    public function scan_files(array $options): array {
+        $files = [];
+        $sizes = [];
+        
+        $this->logger->log('Starting file scan for archiving', 'info');
+        
+        // Scan uploads
+        if ($options['include_uploads']) {
+            $uploads_dir = wp_upload_dir()['basedir'];
+            if (is_dir($uploads_dir)) {
+                $upload_files = $this->scan_directory($uploads_dir, $options['exclude_patterns']);
+                $files = array_merge($files, $upload_files['files']);
+                $sizes = array_merge($sizes, $upload_files['sizes']);
+                $this->logger->log('Scanned uploads: ' . count($upload_files['files']) . ' files', 'info');
+            }
+        }
+        
+        // Scan plugins
+        if ($options['include_plugins']) {
+            $plugins_dir = WP_PLUGIN_DIR;
+            if (is_dir($plugins_dir)) {
+                $plugin_files = $this->scan_directory($plugins_dir);
+                $files = array_merge($files, $plugin_files['files']);
+                $sizes = array_merge($sizes, $plugin_files['sizes']);
+                $this->logger->log('Scanned plugins: ' . count($plugin_files['files']) . ' files', 'info');
+            }
+        }
+        
+        // Scan themes
+        if ($options['include_themes']) {
+            $themes_dir = get_theme_root();
+            if (is_dir($themes_dir)) {
+                $theme_files = $this->scan_directory($themes_dir);
+                $files = array_merge($files, $theme_files['files']);
+                $sizes = array_merge($sizes, $theme_files['sizes']);
+                $this->logger->log('Scanned themes: ' . count($theme_files['files']) . ' files', 'info');
+            }
+        }
+        
+        $total_size = array_sum($sizes);
+        $this->logger->log("File scan complete: " . count($files) . " files, " . size_format($total_size), 'info');
+        
+        return [
+            'files' => $files,
+            'sizes' => $sizes
+        ];
+    }
+    
+    /**
+     * Scan directory for files
+     * 
+     * @param string $directory Directory to scan
+     * @param array $exclude_patterns Patterns to exclude
+     * @return array Array with 'files' and 'sizes' keys
+     */
+    private function scan_directory(string $directory, array $exclude_patterns = []): array {
+        $files = [];
+        $sizes = [];
+        
+        if (!is_dir($directory)) {
+            return ['files' => $files, 'sizes' => $sizes];
+        }
+        
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        
+        foreach ($iterator as $file) {
+            if (!$file->isFile()) {
+                continue;
+            }
+            
+            $file_path = $file->getRealPath();
+            $relative_path = substr($file_path, strlen($directory) + 1);
+            
+            // Check if file should be excluded
+            $should_exclude = false;
+            foreach ($exclude_patterns as $pattern) {
+                if (fnmatch($pattern, $relative_path) || fnmatch($pattern, basename($file_path))) {
+                    $should_exclude = true;
+                    break;
+                }
+            }
+            
+            if ($should_exclude) {
+                continue;
+            }
+            
+            $files[] = $file_path;
+            $sizes[] = $file->getSize();
+        }
+        
+        return ['files' => $files, 'sizes' => $sizes];
+    }
+    
+    /**
+     * Archive next file in the queue
+     * 
+     * @param ExportSession $session Export session
+     * @return array Response data
+     * @throws Exception
+     */
+    public static function archive_next_file(ExportSession $session): array {
+        $start_time = microtime(true);
+        
+        // Get current file
+        $current_file = $session->get_current_file();
+        if (!$current_file) {
+            throw new Exception('No current file to archive');
+        }
+        
+        if (!file_exists($current_file)) {
+            // Skip missing files and move to next
+            $session->increment_index(0);
+            return [
+                'success' => true,
+                'step' => 'archive_files',
+                'progress' => $session->get_progress(),
+                'complete' => $session->is_archiving_complete(),
+                'estimated_size' => $session->get_estimated_size_remaining(),
+                'estimated_time' => $session->get_file_archiving_time_remaining(),
+                'current_file' => $session->get_current_file() ? basename($session->get_current_file()) : null,
+                'message' => 'Skipped missing file: ' . basename($current_file)
+            ];
+        }
+        
+        // Get archive path
+        $archive_path = $session->get_archive_path();
+        if (!$archive_path) {
+            throw new Exception('Archive path not set');
+        }
+        
+        // Open archive
+        $zip = new \ZipArchive();
+        $result = $zip->open($archive_path, \ZipArchive::CREATE);
+        
+        if ($result !== TRUE) {
+            throw new Exception("Cannot open archive: {$archive_path} (Error: {$result})");
+        }
+        
+        // Determine relative path for archive
+        $relative_path = self::get_relative_archive_path($current_file, $session->get_options());
+        
+        // Add file to archive
+        if (!$zip->addFile($current_file, $relative_path)) {
+            $zip->close();
+            throw new Exception("Failed to add file to archive: {$current_file}");
+        }
+        
+        $zip->close();
+        
+        // Calculate runtime
+        $runtime = microtime(true) - $start_time;
+        
+        // Update session
+        $session->increment_index($runtime);
+        
+        // Check if archiving is complete
+        $complete = $session->is_archiving_complete();
+        
+        return [
+            'success' => true,
+            'step' => 'archive_files',
+            'progress' => $session->get_progress(),
+            'complete' => $complete,
+            'estimated_size' => $session->get_estimated_size_remaining(),
+            'estimated_time' => $session->get_file_archiving_time_remaining(),
+            'current_file' => $session->get_current_file() ? basename($session->get_current_file()) : null,
+            'total_files' => $session->get_total_files(),
+            'current_index' => $session->get_current_index(),
+            'message' => $complete ? 'File archiving completed' : 'Archived: ' . basename($current_file)
+        ];
+    }
+    
+    /**
+     * Get relative path for file in archive
+     * 
+     * @param string $file_path Absolute file path
+     * @param array $options Export options
+     * @return string Relative path for archive
+     */
+    private static function get_relative_archive_path(string $file_path, array $options): string {
+        // Determine which directory this file belongs to
+        $uploads_dir = wp_upload_dir()['basedir'];
+        $plugins_dir = WP_PLUGIN_DIR;
+        $themes_dir = get_theme_root();
+        
+        if (strpos($file_path, $uploads_dir) === 0) {
+            return 'uploads/' . substr($file_path, strlen($uploads_dir) + 1);
+        } elseif (strpos($file_path, $plugins_dir) === 0) {
+            return 'plugins/' . substr($file_path, strlen($plugins_dir) + 1);
+        } elseif (strpos($file_path, $themes_dir) === 0) {
+            return 'themes/' . substr($file_path, strlen($themes_dir) + 1);
+        }
+        
+        // Fallback to filename
+        return basename($file_path);
+    }
 }

@@ -119,6 +119,7 @@ class WPEasyMigrate
         add_action('wp_ajax_wp_easy_migrate_export', [$this, 'handle_export_ajax']);
         add_action('wp_ajax_wp_easy_migrate_import', [$this, 'handle_import_ajax']);
         add_action('wp_ajax_wp_easy_migrate_get_logs', [$this, 'handle_get_logs_ajax']);
+        add_action('wp_ajax_wpem_export_step', [$this, 'handle_export_step_ajax']);
     }
 
     /**
@@ -232,9 +233,10 @@ class WPEasyMigrate
             return;
         }
 
+        // Enqueue export JavaScript
         wp_enqueue_script(
-            'wp-easy-migrate-admin',
-            WP_EASY_MIGRATE_PLUGIN_URL . 'assets/js/admin.js',
+            'wp-easy-migrate-export',
+            WP_EASY_MIGRATE_PLUGIN_URL . 'admin/js/export.js',
             ['jquery'],
             WP_EASY_MIGRATE_VERSION,
             true
@@ -247,7 +249,7 @@ class WPEasyMigrate
             WP_EASY_MIGRATE_VERSION
         );
 
-        wp_localize_script('wp-easy-migrate-admin', 'wpEasyMigrate', [
+        wp_localize_script('wp-easy-migrate-export', 'wpEasyMigrate', [
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('wp_easy_migrate_nonce'),
             'strings' => [
@@ -255,6 +257,19 @@ class WPEasyMigrate
                 'importing' => __('Importing...', 'wp-easy-migrate'),
                 'success' => __('Operation completed successfully!', 'wp-easy-migrate'),
                 'error' => __('An error occurred. Please check the logs.', 'wp-easy-migrate'),
+                'startExport' => __('Start Export', 'wp-easy-migrate'),
+                'exportFailed' => __('Export failed', 'wp-easy-migrate'),
+                'exportCancelled' => __('Export cancelled', 'wp-easy-migrate'),
+                'exportInProgress' => __('Export is in progress. Are you sure you want to leave?', 'wp-easy-migrate'),
+                'file' => __('File', 'wp-easy-migrate'),
+                'processing' => __('Processing...', 'wp-easy-migrate'),
+                'preparingExport' => __('Preparing export...', 'wp-easy-migrate'),
+                'scanningFiles' => __('Scanning files...', 'wp-easy-migrate'),
+                'exportingDatabase' => __('Exporting database...', 'wp-easy-migrate'),
+                'archivingFiles' => __('Archiving files...', 'wp-easy-migrate'),
+                'creatingManifest' => __('Creating manifest...', 'wp-easy-migrate'),
+                'splittingArchive' => __('Splitting archive...', 'wp-easy-migrate'),
+                'finalizingExport' => __('Finalizing export...', 'wp-easy-migrate'),
             ]
         ]);
     }
@@ -358,6 +373,20 @@ class WPEasyMigrate
 
         $logs = $this->logger->get_recent_logs(50);
         wp_send_json_success(['logs' => $logs]);
+    }
+
+    /**
+     * Handle export step AJAX request
+     */
+    public function handle_export_step_ajax()
+    {
+        // Ensure the ExportController class is loaded
+        if (!class_exists('\WPEasyMigrate\ExportController')) {
+            require_once WP_EASY_MIGRATE_INCLUDES_DIR . 'ExportController.php';
+        }
+
+        $controller = new \WPEasyMigrate\ExportController();
+        $controller->handle_export_step();
     }
 }
 

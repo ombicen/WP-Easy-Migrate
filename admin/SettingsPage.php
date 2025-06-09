@@ -189,6 +189,22 @@ class SettingsPage {
             margin-right: 10px;
             font-size: 16px;
         }
+        
+        .wp-easy-migrate-file-progress {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .wp-easy-migrate-file-progress .current-file {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .wp-easy-migrate-file-progress .size-progress,
+        .wp-easy-migrate-file-progress .time-remaining {
+            margin-bottom: 3px;
+        }
         </style>
         <?php
     }
@@ -206,6 +222,15 @@ class SettingsPage {
                 <?php wp_nonce_field('wp_easy_migrate_nonce', 'nonce'); ?>
                 
                 <table class="form-table">
+                    <tr>
+                        <th scope="row"><?php _e('Include Database', 'wp-easy-migrate'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="include_database" value="1" checked>
+                                <?php _e('Include WordPress database', 'wp-easy-migrate'); ?>
+                            </label>
+                        </td>
+                    </tr>
                     <tr>
                         <th scope="row"><?php _e('Include Uploads', 'wp-easy-migrate'); ?></th>
                         <td>
@@ -266,52 +291,6 @@ class SettingsPage {
             
             <div id="export-result" class="wp-easy-migrate-status" style="display: none;"></div>
         </div>
-        
-        <script>
-        jQuery(document).ready(function($) {
-            $('#wp-easy-migrate-export-form').on('submit', function(e) {
-                e.preventDefault();
-                
-                var $form = $(this);
-                var $button = $('#start-export');
-                var $progress = $('#export-progress');
-                var $result = $('#export-result');
-                
-                // Disable form and show progress
-                $button.prop('disabled', true).text('<?php _e('Exporting...', 'wp-easy-migrate'); ?>');
-                $progress.show();
-                $result.hide();
-                
-                // Start export
-                $.ajax({
-                    url: ajaxurl,
-                    type: 'POST',
-                    data: $form.serialize() + '&action=wp_easy_migrate_export',
-                    success: function(response) {
-                        if (response.success) {
-                            $result.removeClass('error').addClass('success')
-                                   .html('<strong><?php _e('Export completed successfully!', 'wp-easy-migrate'); ?></strong><br>' + 
-                                         '<?php _e('File:', 'wp-easy-migrate'); ?> ' + response.data.file)
-                                   .show();
-                        } else {
-                            $result.removeClass('success').addClass('error')
-                                   .html('<strong><?php _e('Export failed:', 'wp-easy-migrate'); ?></strong><br>' + response.data.message)
-                                   .show();
-                        }
-                    },
-                    error: function() {
-                        $result.removeClass('success').addClass('error')
-                               .html('<strong><?php _e('Export failed:', 'wp-easy-migrate'); ?></strong><br><?php _e('Network error occurred.', 'wp-easy-migrate'); ?>')
-                               .show();
-                    },
-                    complete: function() {
-                        $button.prop('disabled', false).text('<?php _e('Start Export', 'wp-easy-migrate'); ?>');
-                        $progress.hide();
-                    }
-                });
-            });
-        });
-        </script>
         <?php
     }
     

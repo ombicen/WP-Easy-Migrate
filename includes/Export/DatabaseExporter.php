@@ -119,7 +119,10 @@ class DatabaseExporter
         $sql_content .= "SET FOREIGN_KEY_CHECKS=0;\n";
         $sql_content .= "SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n\n";
 
-        file_put_contents($db_file, $sql_content);
+        if (file_put_contents($db_file, $sql_content) === false) {
+            $this->logger->log('Failed to write SQL header to database export file', 'error');
+            throw new \RuntimeException('Failed to write SQL header to database export file: ' . $db_file);
+        }
 
         // Get all tables
         $tables = $wpdb->get_results("SHOW TABLES", ARRAY_N);
@@ -128,42 +131,56 @@ class DatabaseExporter
             $table_name = $table[0];
 
             // Get table structure
-            $create_table = $wpdb->get_row("SHOW CREATE TABLE `{$table_name}`", ARRAY_N);
+            $create_table = $wpdb->get_row($wpdb->prepare("SHOW CREATE TABLE `%s`", $table_name), ARRAY_N);
             if ($create_table) {
                 $table_sql = "\n-- Table: {$table_name}\n";
                 $table_sql .= "DROP TABLE IF EXISTS `{$table_name}`;\n";
                 $table_sql .= $create_table[1] . ";\n\n";
-
-                file_put_contents($db_file, $table_sql, FILE_APPEND);
+                if (file_put_contents($db_file, $table_sql, FILE_APPEND) === false) {
+                    $this->logger->log('Failed to write table structure to database export file', 'error');
+                    throw new \RuntimeException('Failed to write table structure to database export file: ' . $db_file);
+                }
             }
 
-            // Export data using WordPress functions (handles escaping automatically)
-            $rows = $wpdb->get_results("SELECT * FROM `{$table_name}`", ARRAY_A);
-
-            if (!empty($rows)) {
-                $columns = array_keys($rows[0]);
-                $escaped_columns = array_map(function ($col) {
-                    return "`{$col}`";
-                }, $columns);
-
-                foreach ($rows as $row) {
-                    // Use WordPress prepare() for safe SQL generation
-                    $placeholders = array_fill(0, count($columns), '%s');
-                    $sql = $wpdb->prepare(
-                        "INSERT INTO `{$table_name}` (" . implode(',', $escaped_columns) . ") VALUES (" . implode(',', $placeholders) . ");\n",
-                        ...array_values($row)
-                    );
-
-                    file_put_contents($db_file, $sql, FILE_APPEND);
+            // Export data in batches
+            $row_count = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `{$table_name}`"));
+            $batch_size = 1000;
+            for ($offset = 0; $offset < $row_count; $offset += $batch_size) {
+                $rows = $wpdb->get_results($wpdb->prepare(
+                    "SELECT * FROM `{$table_name}` LIMIT %d OFFSET %d",
+                    $batch_size,
+                    $offset
+                ), ARRAY_A);
+                if (!empty($rows)) {
+                    $columns = array_keys($rows[0]);
+                    $escaped_columns = array_map(function ($col) {
+                        return "`{$col}`";
+                    }, $columns);
+                    foreach ($rows as $row) {
+                        $placeholders = array_fill(0, count($columns), '%s');
+                        $sql = $wpdb->prepare(
+                            "INSERT INTO `{$table_name}` (" . implode(',', $escaped_columns) . ") VALUES (" . implode(',', $placeholders) . ");\n",
+                            ...array_values($row)
+                        );
+                        if (file_put_contents($db_file, $sql, FILE_APPEND) === false) {
+                            $this->logger->log('Failed to write INSERT statement to database export file', 'error');
+                            throw new \RuntimeException('Failed to write INSERT statement to database export file: ' . $db_file);
+                        }
+                    }
+                    if (file_put_contents($db_file, "\n", FILE_APPEND) === false) {
+                        $this->logger->log('Failed to write newline to database export file', 'error');
+                        throw new \RuntimeException('Failed to write newline to database export file: ' . $db_file);
+                    }
                 }
-
-                file_put_contents($db_file, "\n", FILE_APPEND);
             }
         }
 
         // Add footer
         $sql_footer = "SET FOREIGN_KEY_CHECKS=1;\n";
-        file_put_contents($db_file, $sql_footer, FILE_APPEND);
+        if (file_put_contents($db_file, $sql_footer, FILE_APPEND) === false) {
+            $this->logger->log('Failed to write SQL footer to database export file', 'error');
+            throw new \RuntimeException('Failed to write SQL footer to database export file: ' . $db_file);
+        }
 
         $this->logger->log('Database exported with PHP: ' . size_format(filesize($db_file)), 'info');
         return $db_file;

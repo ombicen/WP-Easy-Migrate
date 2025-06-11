@@ -861,6 +861,11 @@ class ExportSession
      */
     public function set_db_export_path(string $path): void
     {
+        $dir = dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            $this->logger->log("Invalid or unwritable database export path: $path", 'error');
+            throw new \RuntimeException("Database export directory does not exist or is not writable: $dir");
+        }
         $this->data['db_export_path'] = $path;
         $this->save();
     }

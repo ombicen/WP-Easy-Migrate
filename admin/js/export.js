@@ -108,6 +108,7 @@
           ? 1
           : 0;
         data.split_size = this.$form.find('[name="split_size"]').val() || 100;
+
         let filesPerStepRaw = this.$form.find('[name="files_per_step"]').val();
         let filesPerStep =
           filesPerStepRaw === "" ? NaN : parseInt(filesPerStepRaw, 10);
@@ -391,7 +392,7 @@
       } else if (step === "archive_files" && status.file_archiving) {
         const fileInfo = status.file_archiving;
         const batchInfo = status.batch_processing;
-        const filesPerStep = batchInfo ? batchInfo.files_per_step : 10;
+        const filesPerStep = batchInfo ? batchInfo.files_per_step : 50;
         statusText = `${stepMessage} (${fileInfo.current_index}/${fileInfo.total_files} files, ${filesPerStep} per batch, ${progress}%)`;
 
         // Update file archiving progress information

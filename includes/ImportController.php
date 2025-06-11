@@ -205,12 +205,29 @@ class ImportController
         $extracted_path = $import_dir . 'extracted/';
         wp_mkdir_p($extracted_path);
 
+        // Validate paths for security (prevent directory traversal attacks)
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $entryName = $zip->getNameIndex($i);
-            $resolved  = realpath($extracted_path . '/' . $entryName);
-            if ($resolved === false || strpos($resolved, realpath($extracted_path)) !== 0) {
+
+            // Check for obviously malicious paths
+            if (strpos($entryName, '../') !== false || strpos($entryName, '..\\') !== false) {
                 $zip->close();
                 throw new \Exception('Unsafe path in archive: ' . $entryName);
+            }
+
+            // Check for absolute paths (should be relative)
+            if (strpos($entryName, '/') === 0 || strpos($entryName, '\\') === 0) {
+                $zip->close();
+                throw new \Exception('Absolute path not allowed in archive: ' . $entryName);
+            }
+
+            // Allow legitimate plugin files including hidden files like .wp-easy-migrate-placeholder
+            if (preg_match('/^[a-zA-Z0-9._\-\/\\\\]+$/', $entryName)) {
+                // Safe characters only - letters, numbers, dots, hyphens, underscores, slashes
+                continue;
+            } else {
+                $zip->close();
+                throw new \Exception('Invalid characters in archive path: ' . $entryName);
             }
         }
 

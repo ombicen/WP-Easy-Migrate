@@ -108,8 +108,11 @@
           ? 1
           : 0;
         data.split_size = this.$form.find('[name="split_size"]').val() || 100;
-        data.files_per_step =
-          this.$form.find('[name="files_per_step"]').val() || 50;
+
+        let filesPerStepRaw = this.$form.find('[name="files_per_step"]').val();
+        let filesPerStep =
+          filesPerStepRaw === "" ? NaN : parseInt(filesPerStepRaw, 10);
+        data.files_per_step = isNaN(filesPerStep) ? 50 : filesPerStep;
       }
 
       $.ajax({

@@ -120,9 +120,14 @@ class ExportSession
             'db_export_path' => null,
             'db_total_tables' => 0,
             'db_current_table_index' => 0,
-            // Batch processing settings - OPTIMIZED DEFAULTS
-            'files_per_step' => 50,
-            'db_rows_per_step' => 5000, // Increased from 1000 to 5000 for better performance
+            // Adaptive batching for small tables
+            'db_tables_info' => [],
+            'db_table_batches' => [],
+            'db_current_batch_index' => 0,
+            'db_adaptive_mode' => false,
+            // Batch processing settings - HIGH PERFORMANCE DEFAULTS
+            'files_per_step' => 100, // Increased from 50 to 100 for better performance
+            'db_rows_per_step' => 15000, // Increased from 5000 to 15000 for much better performance
             'use_optimized_db_export' => true // Enable optimized database export by default
         ];
     }
@@ -147,9 +152,9 @@ class ExportSession
             'include_themes' => true,
             'include_database' => true,
             'split_size' => 100,
-            'files_per_step' => 50,
-            'db_export_mode' => 'optimized',
-            'db_rows_per_step' => 5000,
+            'files_per_step' => 100,
+            'db_export_mode' => 'ultra', // Use ultra-optimized by default
+            'db_rows_per_step' => 15000,
             'exclude_patterns' => [
                 '*.log',
                 '*/cache/*',
@@ -168,7 +173,7 @@ class ExportSession
         }
 
         if (isset($options['db_export_mode'])) {
-            $this->data['use_optimized_db_export'] = ($options['db_export_mode'] === 'optimized');
+            $this->data['use_optimized_db_export'] = ($options['db_export_mode'] === 'optimized' || $options['db_export_mode'] === 'ultra');
         }
 
         $this->save();
@@ -715,6 +720,101 @@ class ExportSession
     }
 
     /**
+     * Initialize adaptive database export with table batching
+     * 
+     * @param array $tables_info Array of table information with sizes
+     */
+    public function init_adaptive_database_export(array $tables_info): void
+    {
+        $this->logger->log("Initializing adaptive database export with " . count($tables_info) . " tables", 'info');
+
+        if (empty($tables_info)) {
+            $this->logger->log('No tables to export', 'warning');
+            $this->data['current_table'] = null;
+            $this->data['db_adaptive_mode'] = false;
+            return;
+        }
+
+        // Store table information
+        $this->data['db_tables_info'] = $tables_info;
+        $this->data['db_adaptive_mode'] = true;
+
+        // Create batches: group small tables together, keep large tables separate
+        $batches = [];
+        $current_small_batch = [];
+        $small_tables_count = 0;
+        $small_tables_total_size = 0;
+        $max_batch_size = 5; // Maximum 5 small tables per batch
+        $max_batch_total_rows = 5000; // Maximum total rows per batch
+
+        foreach ($tables_info as $table_info) {
+            if ($table_info['is_small']) {
+                // Add to current small batch if it doesn't exceed limits
+                if (
+                    count($current_small_batch) < $max_batch_size &&
+                    ($small_tables_total_size + $table_info['rows']) <= $max_batch_total_rows
+                ) {
+
+                    $current_small_batch[] = $table_info;
+                    $small_tables_total_size += $table_info['rows'];
+                    $small_tables_count++;
+                } else {
+                    // Current batch is full, start a new one
+                    if (!empty($current_small_batch)) {
+                        $batches[] = $current_small_batch;
+                    }
+                    $current_small_batch = [$table_info];
+                    $small_tables_total_size = $table_info['rows'];
+                }
+            } else {
+                // Large table gets its own batch
+                if (!empty($current_small_batch)) {
+                    $batches[] = $current_small_batch;
+                    $current_small_batch = [];
+                    $small_tables_total_size = 0;
+                }
+                $batches[] = [$table_info];
+            }
+        }
+
+        // Add any remaining small tables
+        if (!empty($current_small_batch)) {
+            $batches[] = $current_small_batch;
+        }
+
+        $this->data['db_table_batches'] = $batches;
+        $this->data['db_current_batch_index'] = 0;
+        $this->data['db_total_tables'] = count($tables_info);
+        $this->data['table_offset'] = 0;
+
+        // Set current table for compatibility
+        if (!empty($batches) && !empty($batches[0])) {
+            $this->data['current_table'] = $batches[0][0]['name'];
+        } else {
+            $this->data['current_table'] = null;
+        }
+
+        // Ensure export directory exists before setting database path
+        $export_dir = $this->get_export_dir();
+        if (!$export_dir) {
+            throw new \Exception('Export directory not set in session');
+        }
+
+        if (!is_dir($export_dir)) {
+            $result = wp_mkdir_p($export_dir);
+            if (!$result) {
+                throw new \Exception("Failed to create export directory: {$export_dir}");
+            }
+        }
+
+        $this->data['db_export_path'] = $export_dir . 'database.sql';
+
+        $this->logger->log("Adaptive database export initialized: " . count($batches) . " batches, {$small_tables_count} small tables grouped", 'info');
+
+        $this->save();
+    }
+
+    /**
      * Get database tables
      * 
      * @return array Database tables
@@ -797,10 +897,63 @@ class ExportSession
     }
 
     /**
+     * Get current table batch for adaptive processing
+     * 
+     * @return array Current batch of tables to process
+     */
+    public function get_current_table_batch(): array
+    {
+        if (!$this->data['db_adaptive_mode'] || empty($this->data['db_table_batches'])) {
+            // Fallback to single table mode
+            $current_table = $this->get_current_table();
+            if ($current_table) {
+                return [['name' => $current_table, 'rows' => 0, 'size' => 0, 'is_small' => false]];
+            }
+            return [];
+        }
+
+        $batch_index = $this->data['db_current_batch_index'] ?? 0;
+        if ($batch_index < count($this->data['db_table_batches'])) {
+            return $this->data['db_table_batches'][$batch_index];
+        }
+
+        return [];
+    }
+
+    /**
+     * Move to next table batch
+     */
+    public function next_table_batch(): void
+    {
+        if ($this->data['db_adaptive_mode']) {
+            $this->data['db_current_batch_index']++;
+            $this->data['table_offset'] = 0;
+
+            // Update current table for compatibility
+            $next_batch = $this->get_current_table_batch();
+            if (!empty($next_batch)) {
+                $this->data['current_table'] = $next_batch[0]['name'];
+            } else {
+                $this->data['current_table'] = null;
+            }
+        } else {
+            // Fallback to original behavior
+            $this->next_table();
+        }
+
+        $this->save();
+    }
+
+    /**
      * Move to next table
      */
     public function next_table(): void
     {
+        if ($this->data['db_adaptive_mode']) {
+            $this->next_table_batch();
+            return;
+        }
+
         $this->data['db_current_table_index']++;
         $this->data['table_offset'] = 0;
 
@@ -831,6 +984,14 @@ class ExportSession
      */
     public function is_database_export_complete(): bool
     {
+        if ($this->data['db_adaptive_mode']) {
+            // In adaptive mode, check if all batches are processed
+            $total_batches = count($this->data['db_table_batches'] ?? []);
+            $current_batch_index = $this->data['db_current_batch_index'] ?? 0;
+            return $current_batch_index >= $total_batches;
+        }
+
+        // Legacy mode: check if current table is null
         return $this->data['current_table'] === null;
     }
 
@@ -841,6 +1002,16 @@ class ExportSession
      */
     public function get_database_export_progress(): int
     {
+        if ($this->data['db_adaptive_mode']) {
+            $total_batches = count($this->data['db_table_batches'] ?? []);
+            if ($total_batches === 0) {
+                return 100;
+            }
+
+            $current_batch = $this->data['db_current_batch_index'] ?? 0;
+            return round(($current_batch / $total_batches) * 100);
+        }
+
         if ($this->data['db_total_tables'] === 0) {
             return 100;
         }
@@ -989,7 +1160,11 @@ class ExportSession
             'current_table_index' => $this->data['db_current_table_index'] ?? 0,
             'current_table' => $this->data['current_table'] ?? null,
             'table_offset' => $this->data['table_offset'] ?? 0,
-            'progress' => $this->get_database_export_progress()
+            'progress' => $this->get_database_export_progress(),
+            'adaptive_mode' => $this->data['db_adaptive_mode'] ?? false,
+            'total_batches' => count($this->data['db_table_batches'] ?? []),
+            'current_batch_index' => $this->data['db_current_batch_index'] ?? 0,
+            'current_batch_size' => count($this->get_current_table_batch())
         ];
 
         // Add batch processing info

@@ -109,7 +109,7 @@
           : 0;
         data.split_size = this.$form.find('[name="split_size"]').val() || 100;
         data.files_per_step =
-          this.$form.find('[name="files_per_step"]').val() || 10;
+          this.$form.find('[name="files_per_step"]').val() || 50;
       }
 
       $.ajax({
@@ -389,7 +389,7 @@
       } else if (step === "archive_files" && status.file_archiving) {
         const fileInfo = status.file_archiving;
         const batchInfo = status.batch_processing;
-        const filesPerStep = batchInfo ? batchInfo.files_per_step : 10;
+        const filesPerStep = batchInfo ? batchInfo.files_per_step : 50;
         statusText = `${stepMessage} (${fileInfo.current_index}/${fileInfo.total_files} files, ${filesPerStep} per batch, ${progress}%)`;
 
         // Update file archiving progress information

@@ -2,6 +2,10 @@
 
 namespace WPEasyMigrate;
 
+use WP_Easy_Migrate\Export\DatabaseExporter;
+use WP_Easy_Migrate\Export\FileArchiver;
+use WP_Easy_Migrate\Export\ManifestBuilder;
+
 /**
  * ExportController Class
  * 
@@ -16,7 +20,7 @@ class ExportController
     private $logger;
 
     /**
-     * Exporter instance
+     * Exporter instance (for compatibility)
      */
     private $exporter;
 
@@ -26,6 +30,21 @@ class ExportController
     private $archiver;
 
     /**
+     * Database exporter instance
+     */
+    private $databaseExporter;
+
+    /**
+     * File archiver instance
+     */
+    private $fileArchiver;
+
+    /**
+     * Manifest builder instance
+     */
+    private $manifestBuilder;
+
+    /**
      * Constructor
      */
     public function __construct()
@@ -33,6 +52,9 @@ class ExportController
         $this->logger = new Logger();
         $this->exporter = new Exporter();
         $this->archiver = new Archiver();
+        $this->databaseExporter = new DatabaseExporter($this->logger);
+        $this->fileArchiver = new FileArchiver($this->logger);
+        $this->manifestBuilder = new ManifestBuilder();
     }
 
     /**
@@ -154,12 +176,38 @@ class ExportController
                         $db_path_after = $session->get_db_export_path();
                         $this->logger->log("Database path after chunk export: {$db_path_after}", 'info');
 
-                        // Return immediately for database export step without moving to next step
-                        wp_send_json_success([
-                            'message' => $result['message'],
-                            'status' => $session->get_enhanced_status_with_db()
-                        ]);
-                        return;
+                        // Check if the export just completed
+                        if (
+                            $session->is_database_export_complete() ||
+                            (isset($result['message']) && strpos($result['message'], 'Database export completed') !== false)
+                        ) {
+                            $this->logger->log("Database export completed, proceeding to next step", 'info');
+
+                            // Verify the file exists
+                            $db_file_path = $session->get_db_export_path();
+                            if ($db_file_path && file_exists($db_file_path)) {
+                                $db_size = filesize($db_file_path);
+                                $this->logger->log("Database export completed successfully: " . size_format($db_size), 'info');
+                            }
+
+                            // Move to next step since database export is complete
+                            $session->next_step();
+
+                            // Return completion message to frontend
+                            wp_send_json_success([
+                                'message' => __('Database export completed! Moving to file archiving...', 'wp-easy-migrate'),
+                                'status' => $session->get_enhanced_status_with_db(),
+                                'step_completed' => true
+                            ]);
+                            return;
+                        } else {
+                            // Return immediately for database export step without moving to next step
+                            wp_send_json_success([
+                                'message' => $result['message'],
+                                'status' => $session->get_enhanced_status_with_db()
+                            ]);
+                            return;
+                        }
                     } else {
                         // Database export is complete, verify the file exists
                         $db_file_path = $session->get_db_export_path();
@@ -437,7 +485,7 @@ class ExportController
             }
         }
 
-        $manifest_data = $this->exporter->create_manifest([
+        $manifest_data = $this->manifestBuilder->build([
             'export_id' => $session->get_export_id(),
             'site_url' => get_site_url(),
             'wp_version' => get_bloginfo('version'),

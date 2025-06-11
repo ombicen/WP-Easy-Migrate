@@ -855,6 +855,17 @@ class ExportSession
     }
 
     /**
+     * Set database export path
+     * 
+     * @param string $path Database export path
+     */
+    public function set_db_export_path(string $path): void
+    {
+        $this->data['db_export_path'] = $path;
+        $this->save();
+    }
+
+    /**
      * Get database rows per step
      * 
      * @return int Rows per step
@@ -978,12 +989,47 @@ class ExportSession
     }
 
     /**
+     * Mark a table as completed
+     * 
+     * @param string $table_name Table name that was completed
+     */
+    public function mark_table_completed(string $table_name): void
+    {
+        if (!isset($this->data['completed_tables'])) {
+            $this->data['completed_tables'] = [];
+        }
+
+        if (!in_array($table_name, $this->data['completed_tables'])) {
+            $this->data['completed_tables'][] = $table_name;
+        }
+
+        $this->save();
+    }
+
+    /**
+     * Get list of completed tables
+     * 
+     * @return array List of completed table names
+     */
+    public function get_completed_tables(): array
+    {
+        return $this->data['completed_tables'] ?? [];
+    }
+
+    /**
      * Check if database export is complete
      * 
      * @return bool True if complete
      */
     public function is_database_export_complete(): bool
     {
+        // Check if all tables are completed (works for both modes)
+        $total_tables = $this->data['db_total_tables'] ?? 0;
+        $completed_tables = count($this->get_completed_tables());
+        if ($total_tables > 0 && $completed_tables >= $total_tables) {
+            return true;
+        }
+
         if ($this->data['db_adaptive_mode']) {
             // In adaptive mode, check if all batches are processed
             $total_batches = count($this->data['db_table_batches'] ?? []);
@@ -1154,10 +1200,20 @@ class ExportSession
     {
         $status = $this->get_enhanced_status();
 
+        // Calculate tables processed using completed tables list for accuracy
+        $completed_tables = $this->get_completed_tables();
+        $tables_processed = count($completed_tables);
+
+        // For legacy mode, fall back to index if no completed tables tracked
+        if (!($this->data['db_adaptive_mode'] ?? false) && $tables_processed === 0) {
+            $tables_processed = $this->data['db_current_table_index'] ?? 0;
+        }
+
         // Add database export specific data
         $status['database_export'] = [
             'total_tables' => $this->data['db_total_tables'] ?? 0,
-            'current_table_index' => $this->data['db_current_table_index'] ?? 0,
+            'current_table_index' => $tables_processed, // Use calculated value for both modes
+            'tables_processed' => $tables_processed, // Add explicit field for clarity
             'current_table' => $this->data['current_table'] ?? null,
             'table_offset' => $this->data['table_offset'] ?? 0,
             'progress' => $this->get_database_export_progress(),

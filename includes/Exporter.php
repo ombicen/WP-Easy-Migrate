@@ -3,12 +3,12 @@
 namespace WPEasyMigrate;
 
 use WPEasyMigrate\Logger;
+use WPEasyMigrate\Archiver;
 use WP_Easy_Migrate\Export\DatabaseExporter;
 use WP_Easy_Migrate\Export\FileArchiver;
 use WP_Easy_Migrate\Export\ManifestBuilder;
 use WP_Easy_Migrate\Export\DirectoryScanner;
 use WP_Easy_Migrate\Export\PathSanitizer;
-use WP_Easy_Migrate\Export\SqlFormatter;
 
 /**
  * Exporter Class
@@ -59,10 +59,14 @@ class Exporter
     public function __construct()
     {
         $this->logger = new Logger();
+        $this->archiver = new Archiver();
         $this->databaseExporter = new DatabaseExporter($this->logger);
         $this->fileArchiver = new FileArchiver($this->logger);
         $this->manifestBuilder = new ManifestBuilder();
         $this->directoryScanner = new DirectoryScanner();
+
+        // Initialize export directory
+        $this->export_dir = WP_EASY_MIGRATE_UPLOADS_DIR . 'temp/';
     }
 
     /**
@@ -150,7 +154,9 @@ class Exporter
             $this->logger->log("Manifest created: {$manifest_file}", 'info');
 
             // Create main archive
-            $archive_path = $this->fileArchiver->archiveExport($current_export_dir, $this->export_dir, $export_id);
+            $exports_dir = WP_EASY_MIGRATE_UPLOADS_DIR . 'exports/';
+            wp_mkdir_p($exports_dir);
+            $archive_path = $this->fileArchiver->archiveExport($current_export_dir, $exports_dir, $export_id);
 
             // Split archive if needed
             if ($options['split_size'] > 0) {
@@ -258,5 +264,46 @@ class Exporter
         }
 
         rmdir($dir);
+    }
+
+    /**
+     * Export database in chunks (static method for ExportController compatibility)
+     * 
+     * @param ExportSession $session Export session
+     * @return array Result with message
+     * @throws \Exception
+     */
+    public static function export_database_chunk(ExportSession $session): array
+    {
+        $logger = new Logger();
+        $databaseExporter = new DatabaseExporter($logger);
+
+        return $databaseExporter->exportChunk($session);
+    }
+
+    /**
+     * Archive next batch of files (static method for ExportController compatibility)
+     * 
+     * @param ExportSession $session Export session
+     * @return array Result with message
+     * @throws \Exception
+     */
+    public static function archive_next_batch(ExportSession $session): array
+    {
+        $logger = new Logger();
+        $fileArchiver = new FileArchiver($logger);
+
+        return $fileArchiver->archiveNextBatch($session);
+    }
+
+    /**
+     * Create manifest (instance method for ExportController compatibility)
+     * 
+     * @param array $data Manifest data
+     * @return string JSON manifest
+     */
+    public function create_manifest(array $data): string
+    {
+        return $this->manifestBuilder->build($data);
     }
 }

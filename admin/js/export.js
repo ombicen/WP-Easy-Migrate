@@ -429,16 +429,35 @@
         progressHtml += `<div class="current-table">Exporting table: ${dbInfo.current_table}</div>`;
       }
 
-      // Table progress
+      // Table progress - use tables_processed for accurate counting
       if (dbInfo.total_tables > 0) {
-        progressHtml += `<div class="table-progress">Table ${
-          dbInfo.current_table_index + 1
-        } of ${dbInfo.total_tables}</div>`;
+        const completedTables =
+          dbInfo.tables_processed || dbInfo.current_table_index || 0;
+        // Show completed tables count vs total
+        const displayCount = completedTables;
+        progressHtml += `<div class="table-progress">Tables completed: ${displayCount} of ${dbInfo.total_tables}</div>`;
       }
 
       // Row offset if available
       if (dbInfo.table_offset > 0) {
         progressHtml += `<div class="row-progress">Rows processed: ${dbInfo.table_offset.toLocaleString()}</div>`;
+      }
+
+      // Adaptive mode information
+      if (dbInfo.adaptive_mode && dbInfo.total_batches > 0) {
+        const currentBatch = dbInfo.current_batch_index || 0;
+        const batchSize = dbInfo.current_batch_size || 0;
+
+        // Don't show batch numbers higher than total
+        if (currentBatch < dbInfo.total_batches) {
+          progressHtml += `<div class="batch-progress">Batch ${
+            currentBatch + 1
+          } of ${
+            dbInfo.total_batches
+          } (${batchSize} tables in current batch)</div>`;
+        } else {
+          progressHtml += `<div class="batch-progress">All batches completed (${dbInfo.total_batches} batches processed)</div>`;
+        }
       }
 
       this.$dbProgress.html(progressHtml);

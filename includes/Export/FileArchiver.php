@@ -115,4 +115,80 @@ class FileArchiver
         }
         return $archive_path;
     }
+
+    /**
+     * Archive next batch of files for step-based processing
+     * 
+     * @param \WPEasyMigrate\ExportSession $session Export session
+     * @return array Result with message
+     * @throws \Exception
+     */
+    public function archiveNextBatch(\WPEasyMigrate\ExportSession $session): array
+    {
+        $archive_path = $session->get_archive_path();
+
+        if (!$archive_path) {
+            throw new \Exception('Archive path not set in session');
+        }
+
+        $current_index = $session->get_current_index();
+        $batch = $session->get_current_batch();
+
+        if (empty($batch)) {
+            // No more files to process
+            return ['message' => __('File archiving completed', 'wp-easy-migrate')];
+        }
+
+        $relative_paths = $session->get_relative_paths();
+        $file_sizes = $session->get_file_sizes();
+
+        // Open archive for appending
+        $zip = new \ZipArchive();
+        $result = $zip->open($archive_path, file_exists($archive_path) ? 0 : \ZipArchive::CREATE);
+
+        if ($result !== TRUE) {
+            throw new \Exception("Cannot open archive for batch processing: {$archive_path} (Error: {$result})");
+        }
+
+        $start_time = microtime(true);
+        $files_added = 0;
+
+        try {
+            foreach ($batch as $i => $file_path) {
+                $global_index = $current_index + $i;
+
+                if (!file_exists($file_path)) {
+                    $this->logger->log("File not found, skipping: {$file_path}", 'warning');
+                    continue;
+                }
+
+                $relative_path = $relative_paths[$global_index] ?? basename($file_path);
+                $sanitized_path = \WP_Easy_Migrate\Export\PathSanitizer::sanitize($relative_path);
+
+                if ($zip->addFile($file_path, $sanitized_path)) {
+                    $files_added++;
+                    $file_size = $file_sizes[$global_index] ?? filesize($file_path);
+                    $this->logger->log("Added file to archive: {$sanitized_path} (" . size_format($file_size) . ")", 'debug');
+                } else {
+                    $this->logger->log("Failed to add file to archive: {$file_path}", 'warning');
+                }
+            }
+
+            $zip->close();
+
+            // Update session progress
+            $runtime = microtime(true) - $start_time;
+            $session->increment_index_batch(count($batch), $runtime);
+
+            $this->logger->log("Archived batch: {$files_added} files in " . round($runtime, 2) . "s", 'info');
+
+            $total_files = $session->get_total_files();
+            $new_index = $session->get_current_index();
+
+            return ['message' => sprintf(__('Archiving files... (%d of %d)', 'wp-easy-migrate'), $new_index, $total_files)];
+        } catch (\Exception $e) {
+            $zip->close();
+            throw $e;
+        }
+    }
 }

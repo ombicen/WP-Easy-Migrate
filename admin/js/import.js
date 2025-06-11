@@ -31,6 +31,16 @@
     init() {
       this.bindEvents();
       this.updateUI("ready", "Ready to import");
+      this.initializeSteps();
+    }
+
+    /**
+     * Initialize all steps as waiting
+     */
+    initializeSteps() {
+      $(".import-step")
+        .removeClass("waiting running completed failed")
+        .addClass("waiting");
     }
 
     /**
@@ -72,6 +82,11 @@
       this.isRunning = true;
       this.currentRetries = 0;
       this.updateUI("running", "Starting import...");
+
+      // Show progress container and initialize steps
+      this.$progress.show();
+      this.initializeSteps();
+
       this.makeImportRequest(true);
     }
 
@@ -144,6 +159,17 @@
       this.isRunning = false;
       this.clearPollInterval();
 
+      // Mark all steps as completed
+      $(".import-step")
+        .removeClass("waiting running failed")
+        .addClass("completed");
+
+      // Restore original descriptions
+      $(".import-step").each((index, element) => {
+        const $step = $(element);
+        this.updateStepStatus($step, "completed");
+      });
+
       let successMessage =
         message ||
         wpEasyMigrate.strings.success ||
@@ -184,6 +210,10 @@
       this.isRunning = false;
       this.clearPollInterval();
 
+      // Mark current running step as failed
+      $(".import-step.running").removeClass("running").addClass("failed");
+      $(".import-step.failed .step-description").text("Operation failed");
+
       let errorMessage = error;
       if (xhr && xhr.responseJSON && xhr.responseJSON.data) {
         errorMessage = xhr.responseJSON.data.message || xhr.responseJSON.data;
@@ -223,77 +253,93 @@
      * @param {string} message Status message
      */
     updateImportStatus(status, message) {
-      // Update progress bar
-      if (status.progress !== undefined) {
-        this.updateProgressBar(status.progress);
-      }
+      // Update step checklist
+      this.updateStepChecklist(status);
 
-      // Update step message
+      // Update overall status message
       this.updateUI("running", message);
-
-      // Update detailed status
-      this.updateDetailedStatus(status);
     }
 
     /**
-     * Update progress bar
-     *
-     * @param {number} progress Progress percentage (0-100)
-     */
-    updateProgressBar(progress) {
-      if (!this.$progressBar) {
-        this.$progressBar = $(
-          '<div class="wp-easy-migrate-progress-bar"><div class="wp-easy-migrate-progress-fill"></div></div>'
-        );
-        this.$progress.append(this.$progressBar);
-      }
-
-      const $fill = this.$progressBar.find(".wp-easy-migrate-progress-fill");
-      $fill.css("width", Math.max(0, Math.min(100, progress)) + "%");
-
-      // Add percentage text
-      if (!this.$progressText) {
-        this.$progressText = $(
-          '<div class="wp-easy-migrate-progress-text"></div>'
-        );
-        this.$progress.append(this.$progressText);
-      }
-      this.$progressText.text(`${Math.round(progress)}%`);
-    }
-
-    /**
-     * Update detailed status information
+     * Update step checklist based on current status
      *
      * @param {Object} status Import status object
      */
-    updateDetailedStatus(status) {
-      if (!this.$detailStatus) {
-        this.$detailStatus = $(
-          '<div class="wp-easy-migrate-detail-status"></div>'
-        );
-        this.$progress.append(this.$detailStatus);
+    updateStepChecklist(status) {
+      const currentStep = status.step;
+      const isError = status.error || status.failed;
+
+      // Get all steps in order
+      const steps = [
+        "upload_file",
+        "extract_archive",
+        "validate_manifest",
+        "backup_current_site",
+        "import_database",
+        "import_files",
+        "update_urls",
+        "cleanup",
+      ];
+
+      const currentStepIndex = steps.indexOf(currentStep);
+
+      steps.forEach((step, index) => {
+        const $step = $(`.import-step[data-step="${step}"]`);
+
+        if (index < currentStepIndex) {
+          // Previous steps are completed
+          this.updateStepStatus($step, "completed");
+        } else if (index === currentStepIndex) {
+          // Current step
+          if (isError) {
+            this.updateStepStatus(
+              $step,
+              "failed",
+              status.current_operation || "Operation failed"
+            );
+          } else {
+            this.updateStepStatus(
+              $step,
+              "running",
+              status.current_operation || this.getStepMessage(step)
+            );
+          }
+        } else {
+          // Future steps are waiting
+          this.updateStepStatus($step, "waiting");
+        }
+      });
+    }
+
+    /**
+     * Update individual step status
+     *
+     * @param {jQuery} $step Step element
+     * @param {string} status Status (waiting, running, completed, failed)
+     * @param {string} description Optional description override
+     */
+    updateStepStatus($step, status, description = null) {
+      $step.removeClass("waiting running completed failed").addClass(status);
+
+      if (description) {
+        $step.find(".step-description").text(description);
+      } else {
+        // Restore original description if no override
+        const step = $step.data("step");
+        const originalDescriptions = {
+          upload_file: "Processing uploaded archive file",
+          extract_archive: "Extracting files from archive",
+          validate_manifest: "Checking import compatibility",
+          backup_current_site: "Creating safety backup",
+          import_database: "Restoring database content",
+          import_files: "Restoring media and files",
+          update_urls: "Updating site URLs",
+          cleanup: "Cleaning up temporary files",
+        };
+        $step
+          .find(".step-description")
+          .text(originalDescriptions[step] || "Processing...");
       }
-
-      let statusHtml = "";
-
-      // Current step
-      if (status.step) {
-        statusHtml += `<div class="current-step">Step: ${this.getStepMessage(
-          status.step
-        )}</div>`;
-      }
-
-      // Current operation
-      if (status.current_operation) {
-        statusHtml += `<div class="current-operation">${status.current_operation}</div>`;
-      }
-
-      // Import ID
-      if (status.import_id) {
-        statusHtml += `<div class="import-id">Import ID: ${status.import_id}</div>`;
-      }
-
-      this.$detailStatus.html(statusHtml);
     }
 
     /**

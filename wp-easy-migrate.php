@@ -36,25 +36,35 @@ define('WP_EASY_MIGRATE_LOGS_DIR', WP_EASY_MIGRATE_UPLOADS_DIR . 'logs/');
  * PSR-4 Autoloader for WP Easy Migrate
  */
 spl_autoload_register(function ($class) {
-    $prefix = 'WPEasyMigrate\\';
+    // Handle main namespace
+    $prefix1 = 'WPEasyMigrate\\';
+    $prefix2 = 'WP_Easy_Migrate\\';
 
-    // Check if the class uses the namespace prefix
-    $len = strlen($prefix);
-    if (strncmp($prefix, $class, $len) !== 0) {
-        return;
-    }
-
-    // Get the relative class name
-    $relative_class = substr($class, $len);
-
-    // Replace namespace separators with directory separators
-    $relative_path = str_replace('\\', '/', $relative_class) . '.php';
-
-    // Try different base directories
+    $relative_class = null;
     $base_dirs = [
         WP_EASY_MIGRATE_INCLUDES_DIR,
         WP_EASY_MIGRATE_ADMIN_DIR
     ];
+
+    // Check if the class uses the main namespace prefix
+    $len1 = strlen($prefix1);
+    if (strncmp($prefix1, $class, $len1) === 0) {
+        $relative_class = substr($class, $len1);
+    }
+    // Check if the class uses the Export namespace prefix
+    else {
+        $len2 = strlen($prefix2);
+        if (strncmp($prefix2, $class, $len2) === 0) {
+            $relative_class = substr($class, $len2);
+        }
+    }
+
+    if ($relative_class === null) {
+        return;
+    }
+
+    // Replace namespace separators with directory separators
+    $relative_path = str_replace('\\', '/', $relative_class) . '.php';
 
     foreach ($base_dirs as $base_dir) {
         $file = $base_dir . $relative_path;

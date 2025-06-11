@@ -322,7 +322,11 @@ class Exporter
     private function create_filtered_archive(string $source_dir, string $archive_path, array $exclude_patterns = []): string
     {
         $zip = new \ZipArchive();
-        $zip->open($archive_path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        $result = $zip->open($archive_path, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+
+        if ($result !== TRUE) {
+            throw new \Exception("Cannot create archive: {$archive_path} (Error: {$result})");
+        }
 
         $iterator = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($source_dir, \RecursiveDirectoryIterator::SKIP_DOTS),

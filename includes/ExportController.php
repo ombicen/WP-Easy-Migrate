@@ -711,16 +711,17 @@ class ExportController
      */
     private function parse_export_options(array $validated_post): array
     {
+        // Use the validated data passed to the method instead of raw $_POST
         return [
-            'include_uploads' => isset($_POST['include_uploads']) ? (bool) $_POST['include_uploads'] : false,
-            'include_plugins' => isset($_POST['include_plugins']) ? (bool) $_POST['include_plugins'] : false,
-            'include_themes' => isset($_POST['include_themes']) ? (bool) $_POST['include_themes'] : false,
-            'include_database' => isset($_POST['include_database']) ? (bool) $_POST['include_database'] : false,
-            'split_size' => isset($_POST['split_size']) ? (int) $_POST['split_size'] : 100,
-            'files_per_step' => isset($_POST['files_per_step']) ? (int) $_POST['files_per_step'] : 50,
-            'db_export_mode' => isset($_POST['db_export_mode']) ? sanitize_text_field($_POST['db_export_mode']) : 'optimized',
-            'db_rows_per_step' => isset($_POST['db_rows_per_step']) ? (int) $_POST['db_rows_per_step'] : 5000,
-            'exclude_patterns' => [
+            'include_uploads'  => (bool) ($validated_post['include_uploads']  ?? false),
+            'include_plugins'  => (bool) ($validated_post['include_plugins']  ?? false),
+            'include_themes'   => (bool) ($validated_post['include_themes']   ?? false),
+            'include_database' => (bool) ($validated_post['include_database'] ?? false),
+            'split_size'       => (int)  ($validated_post['split_size']       ?? 100),
+            'files_per_step'   => (int)  ($validated_post['files_per_step']   ?? 50),
+            'db_export_mode'   => $validated_post['db_export_mode']   ?? 'optimized',
+            'db_rows_per_step' => (int)  ($validated_post['db_rows_per_step'] ?? 5000),
+            'exclude_patterns' => $validated_post['exclude_patterns'] ?? [
                 '*.log',
                 '*/cache/*',
                 '*/wp-easy-migrate/*'
